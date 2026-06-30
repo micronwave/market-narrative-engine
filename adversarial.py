@@ -10,6 +10,27 @@ from ingester import RawDocument
 from repository import Repository
 from settings import Settings
 
+try:
+    from tldextract import extract as _tld_extract
+
+    def _registered_domain(netloc: str) -> str:
+        """Normalize a netloc to its registered domain (eTLD+1).
+
+        a.example.com and b.example.com both return 'example.com', preventing
+        subdomain-flood evasion.  Falls back to raw netloc on parse failure.
+        """
+        parts = _tld_extract(netloc)
+        if parts.domain and parts.suffix:
+            return f"{parts.domain}.{parts.suffix}"
+        return netloc
+
+except ImportError:
+    # tldextract not installed — strip one leading label as a best-effort
+    # normalization (covers the common sub.domain.tld pattern).
+    def _registered_domain(netloc: str) -> str:  # type: ignore[misc]
+        parts = netloc.split(".")
+        return ".".join(parts[-2:]) if len(parts) >= 2 else netloc
+
 logger = logging.getLogger(__name__)
 
 
@@ -172,28 +193,67 @@ def check_coordination(
 
         cluster_docs = [docs_with_sigs[i] for i in indices]
 
-        # Criterion 1: >= SYNC_BURST_MIN_SOURCES distinct non-trusted domains.
-        cluster_domains = [doc.source_domain for doc in cluster_docs]
-        unique_untrusted_domains = [
-            d for d in set(cluster_domains) if d not in trusted_set
-        ]
+        # Criterion 1: >= SYNC_BURST_MIN_SOURCES distinct registered domains
+        # (eTLD+1), excluding trusted sources.  Raw netloc is not used here to
+        # prevent subdomain-flood evasion (a.x.com and b.x.com both map to x.com).
+        trusted_registered = {_registered_domain(d) for d in trusted_set}
+        registered_by_doc = {
+            doc.doc_id: _registered_domain(doc.source_domain) for doc in cluster_docs
+        }
+        unique_untrusted_domains = list(
+            {rd for rd in registered_by_doc.values() if rd not in trusted_registered}
+        )
         if len(unique_untrusted_domains) < settings.SYNC_BURST_MIN_SOURCES:
             continue
 
-        # Criterion 2: all published_at timestamps within SYNC_BURST_WINDOW_SECONDS.
+        # Criterion 2: rolling window — at least SYNC_BURST_MIN_SOURCES *distinct*
+        # registered domains must appear within any SYNC_BURST_WINDOW_SECONDS span.
+        # We use a sorted-timestamp sliding window so a single outlier document
+        # cannot break up a real dense burst inside the cluster.
         try:
-            timestamps = [
-                datetime.fromisoformat(doc.published_at).timestamp()
-                for doc in cluster_docs
-            ]
+            doc_ts: list[tuple[float, str]] = []
+            for doc in cluster_docs:
+                rd = registered_by_doc[doc.doc_id]
+                if rd in trusted_registered:
+                    continue
+                # Force UTC-aware parse so machine timezone never bleeds in.
+                raw = doc.published_at
+                dt = datetime.fromisoformat(raw)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                doc_ts.append((dt.timestamp(), rd))
         except (TypeError, ValueError) as exc:
             logger.warning(
                 "Could not parse published_at for coordination cluster: %s", exc
             )
             continue
 
-        time_span = max(timestamps) - min(timestamps)
-        if time_span > settings.SYNC_BURST_WINDOW_SECONDS:
+        doc_ts.sort()
+        window = settings.SYNC_BURST_WINDOW_SECONDS
+        min_sources = settings.SYNC_BURST_MIN_SOURCES
+
+        # Slide a right pointer over the sorted list; for each left anchor find
+        # how many distinct domains fit within the window starting at that point.
+        burst_found = False
+        right = 0
+        window_domains: dict[str, int] = {}  # domain -> count inside window
+
+        for left, (t_left, _) in enumerate(doc_ts):
+            # Expand right edge.
+            while right < len(doc_ts) and doc_ts[right][0] - t_left <= window:
+                d = doc_ts[right][1]
+                window_domains[d] = window_domains.get(d, 0) + 1
+                right += 1
+            if len(window_domains) >= min_sources:
+                burst_found = True
+                break
+            # Shrink left edge before next iteration.
+            d_left = doc_ts[left][1]
+            window_domains[d_left] -= 1
+            if window_domains[d_left] == 0:
+                del window_domains[d_left]
+
+        if not burst_found:
             continue
 
         # ------------------------------------------------------------------
@@ -230,19 +290,20 @@ def check_coordination(
         )
         events.append(event)
 
-        # Log to adversarial_log.
-        repository.log_adversarial_event(
-            {
-                "event_id": event_id,
-                "narrative_id": (
-                    affected_narrative_ids[0] if affected_narrative_ids else None
-                ),
-                "detected_at": now,
-                "source_domains": json.dumps(unique_untrusted_domains),
-                "similarity_score": avg_similarity,
-                "action_taken": "coordination_flag",
-            }
-        )
+        # Log one row per affected narrative so rolling-window counts and API
+        # queries work correctly for every impacted narrative (not just index 0).
+        log_narrative_ids = affected_narrative_ids if affected_narrative_ids else [None]
+        for log_nid in log_narrative_ids:
+            repository.log_adversarial_event(
+                {
+                    "event_id": event_id,
+                    "narrative_id": log_nid,
+                    "detected_at": now,
+                    "source_domains": json.dumps(unique_untrusted_domains),
+                    "similarity_score": avg_similarity,
+                    "action_taken": "coordination_flag",
+                }
+            )
 
         # Apply penalty and flags to each affected narrative.
         for narrative_id in affected_narrative_ids:
