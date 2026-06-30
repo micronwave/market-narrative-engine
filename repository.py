@@ -1277,6 +1277,11 @@ class SqliteRepository(Repository):
                 except Exception:
                     pass
 
+            try:
+                conn.execute("ALTER TABLE llm_audit_log ADD COLUMN error TEXT DEFAULT NULL")
+            except Exception:
+                pass
+
             snapshot_sql_row = conn.execute(
                 "SELECT sql FROM sqlite_master WHERE type='table' AND name='narrative_snapshots'"
             ).fetchone()
@@ -1740,6 +1745,7 @@ class SqliteRepository(Repository):
                     "WHERE type='table' AND name='pipeline_run_log'"
                 ).fetchone()
                 if row and "run_id TEXT PRIMARY KEY" in (row[0] or ""):
+                    conn.execute("DROP TABLE IF EXISTS pipeline_run_log_new")
                     conn.execute("""
                         CREATE TABLE pipeline_run_log_new (
                             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2358,6 +2364,76 @@ class SqliteRepository(Repository):
                 (narrative_id, date, centroid_blob),
             )
 
+    def persist_document_assignment(
+        self,
+        *,
+        narrative_id: str,
+        date: str,
+        doc_id: str | None,
+        pipeline_cycle_id: str | None,
+        narrative_update: dict,
+        evidence: dict,
+        centroid_history: dict | None = None,
+    ) -> None:
+        """Atomically write all per-document assignment records in one transaction.
+
+        centroid_history: if provided, must have keys 'date' (cycle_slot) and 'blob' (bytes).
+        narrative_update: fields for update_narrative (last_assignment_date, last_updated_at, etc.)
+        evidence: same shape as insert_document_evidence argument.
+        """
+        record = dict(evidence)
+        canonical_source_url = self._canonicalize_source_url(record.get("source_url"))
+        record["canonical_source_url"] = canonical_source_url
+        record["evidence_fingerprint"] = self._build_evidence_fingerprint(record, canonical_source_url)
+        safe_cols = self._sanitize_columns(record.keys())
+        cols = ", ".join(safe_cols)
+        placeholders = ", ".join("?" * len(safe_cols))
+        values = [record.get(col) for col in safe_cols]
+
+        allowed_update_cols = self._sanitize_columns(narrative_update.keys())
+        if allowed_update_cols:
+            set_clause = ", ".join(f"{c} = ?" for c in allowed_update_cols)
+            update_vals = [narrative_update[c] for c in allowed_update_cols] + [narrative_id]
+
+        with self._get_conn() as conn:
+            if centroid_history:
+                conn.execute(
+                    "INSERT INTO centroid_history (narrative_id, date, centroid_blob) VALUES (?, ?, ?)",
+                    (narrative_id, centroid_history["date"], centroid_history["blob"]),
+                )
+            conn.execute(
+                "INSERT INTO narrative_assignments (narrative_id, doc_id, assigned_at, pipeline_cycle_id) VALUES (?, ?, ?, ?)",
+                (narrative_id, doc_id, date, pipeline_cycle_id),
+            )
+            if allowed_update_cols:
+                conn.execute(
+                    f"UPDATE narratives SET {set_clause} WHERE narrative_id = ?",
+                    update_vals,
+                )
+            existing = conn.execute(
+                "SELECT 1 FROM document_evidence WHERE doc_id = ?",
+                (record.get("doc_id"),),
+            ).fetchone()
+            if existing:
+                update_ev_cols = [c for c in safe_cols if c != "doc_id"]
+                update_ev_clause = ", ".join(f"{c} = ?" for c in update_ev_cols)
+                conn.execute(
+                    f"UPDATE document_evidence SET {update_ev_clause} WHERE doc_id = ?",
+                    [record.get(c) for c in update_ev_cols] + [record.get("doc_id")],
+                )
+            else:
+                try:
+                    conn.execute(
+                        f"INSERT INTO document_evidence ({cols}) VALUES ({placeholders})",
+                        values,
+                    )
+                except sqlite3.IntegrityError:
+                    logger.info(
+                        "persist_document_assignment: duplicate evidence suppressed for narrative_id=%s url=%s",
+                        narrative_id,
+                        canonical_source_url or record.get("source_url") or "",
+                    )
+
     def get_centroid_history(self, narrative_id: str, days: int, *, limit: int = 0, offset: int = 0) -> list[dict]:
         cutoff = (
             datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)
@@ -2755,8 +2831,13 @@ class SqliteRepository(Repository):
                     )
 
             impact_rows = conn.execute(
-                "SELECT narrative_id, ticker, direction, impact_score, confidence, time_horizon, signal_components, computed_at FROM impact_scores"
+                "SELECT narrative_id, ticker, direction, impact_score, confidence, time_horizon, signal_components, computed_at "
+                "FROM impact_scores WHERE pipeline_cycle_id = ?",
+                (cycle_id,),
             ).fetchall()
+            # No fallback: publishing stale rows from prior cycles produces misleading
+            # impact data for the current snapshot. Missing cycle-scoped rows surface as
+            # zero published_impact_scores, which is the correct signal to consumers.
             published_set = set(published_rows)
             for row in impact_rows:
                 if row['narrative_id'] not in published_set:
@@ -2970,18 +3051,27 @@ class SqliteRepository(Repository):
             return [dict(r) for r in rows]
 
     def get_baseline_doc_rate(self, narrative_id: str, lookback_days: int = 7) -> float:
-        """Returns average doc_count from recent snapshots for baseline calculation."""
+        """Returns average daily doc_count delta over the lookback window.
+
+        Groups by snapshot_date so intra-day snapshots (written every pipeline cycle)
+        don't artificially shrink the per-interval delta and inflate burst metrics.
+        """
+        from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+        cutoff = (_dt.now(_tz.utc) - _td(days=lookback_days)).strftime("%Y-%m-%d")
         with self._get_conn() as conn:
             rows = conn.execute(
-                "SELECT doc_count FROM narrative_snapshots "
-                "WHERE narrative_id = ? ORDER BY snapshot_date DESC, created_at DESC LIMIT ?",
-                (narrative_id, lookback_days),
+                "SELECT snapshot_date, MAX(doc_count) AS doc_count "
+                "FROM narrative_snapshots "
+                "WHERE narrative_id = ? AND snapshot_date >= ? "
+                "GROUP BY snapshot_date "
+                "ORDER BY snapshot_date DESC",
+                (narrative_id, cutoff),
             ).fetchall()
         if not rows or len(rows) < 2:
             return 0.0
         counts = [r["doc_count"] or 0 for r in rows]
-        # Average change per snapshot interval
-        changes = [abs(counts[i] - counts[i+1]) for i in range(len(counts)-1)]
+        # Average change per calendar day
+        changes = [abs(counts[i] - counts[i + 1]) for i in range(len(counts) - 1)]
         return sum(changes) / len(changes) if changes else 0.0
 
     def get_snapshot_history(self, narrative_id: str, days: int = 30) -> list:
@@ -3974,22 +4064,22 @@ class SqliteRepository(Repository):
                 "SELECT key_actors, affected_sectors FROM narrative_signals WHERE narrative_id = ?",
                 (narrative_id,),
             ).fetchone()
-            key_actors = existing['key_actors'] if existing else '[]'
-            affected_sectors = existing['affected_sectors'] if existing else '[]'
-            conn.execute("""
-                INSERT OR REPLACE INTO narrative_signals
-                    (narrative_id, direction, confidence, timeframe, magnitude,
-                     certainty, key_actors, affected_sectors, catalyst_type,
-                     extracted_at, raw_response, extraction_status, parse_error)
-                VALUES (?, 'neutral', 0.0, 'unknown', 'incremental', 'speculative', ?, ?, 'unknown', ?, ?, 'error', ?)
-            """, (
-                narrative_id,
-                key_actors,
-                affected_sectors,
-                extracted_at,
-                raw_response,
-                parse_error,
-            ))
+            if existing:
+                # Preserve existing signal values; only record the failure metadata.
+                conn.execute("""
+                    UPDATE narrative_signals
+                    SET extracted_at = ?, raw_response = ?, extraction_status = 'error', parse_error = ?
+                    WHERE narrative_id = ?
+                """, (extracted_at, raw_response, parse_error, narrative_id))
+            else:
+                # No prior signal — insert a neutral placeholder so the row exists.
+                conn.execute("""
+                    INSERT INTO narrative_signals
+                        (narrative_id, direction, confidence, timeframe, magnitude,
+                         certainty, key_actors, affected_sectors, catalyst_type,
+                         extracted_at, raw_response, extraction_status, parse_error)
+                    VALUES (?, 'neutral', 0.0, 'unknown', 'incremental', 'speculative', '[]', '[]', 'unknown', ?, ?, 'error', ?)
+                """, (narrative_id, extracted_at, raw_response, parse_error))
 
     def get_narrative_signal(self, narrative_id: str) -> dict | None:
         with self._get_conn() as conn:
