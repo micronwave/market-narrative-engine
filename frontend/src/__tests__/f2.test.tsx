@@ -21,7 +21,9 @@ const guestAuth = {
   signOut: jest.fn(),
 };
 
-function makeNarrative(burstVelocity: { rate: number; baseline: number; ratio: number; is_burst: boolean } | null): VisibleNarrative {
+function makeNarrative(
+  burstVelocity: { ratio: number; is_burst: boolean; label: string } | null
+): VisibleNarrative {
   return {
     id: "nar-001",
     name: "Test Narrative",
@@ -39,7 +41,9 @@ function makeNarrative(burstVelocity: { rate: number; baseline: number; ratio: n
   };
 }
 
-function renderCard(burstVelocity: { rate: number; baseline: number; ratio: number; is_burst: boolean } | null) {
+function renderCard(
+  burstVelocity: { ratio: number; is_burst: boolean; label: string } | null
+) {
   return render(
     <AuthContext.Provider value={guestAuth}>
       <NarrativeCard narrative={makeNarrative(burstVelocity)} />
@@ -53,7 +57,7 @@ function renderCard(burstVelocity: { rate: number; baseline: number; ratio: numb
 
 describe("F2-U1: Burst indicator renders when is_burst is true", () => {
   it("renders burst-indicator when is_burst=true", () => {
-    renderCard({ rate: 30, baseline: 10, ratio: 3.0, is_burst: true });
+    renderCard({ ratio: 3.0, is_burst: true, label: "RISING" });
     expect(screen.getByTestId("burst-indicator")).toBeInTheDocument();
   });
 });
@@ -64,7 +68,7 @@ describe("F2-U1: Burst indicator renders when is_burst is true", () => {
 
 describe("F2-U2: Burst indicator not rendered when is_burst is false", () => {
   it("does not render burst-indicator when is_burst=false", () => {
-    renderCard({ rate: 10, baseline: 10, ratio: 1.0, is_burst: false });
+    renderCard({ ratio: 1.0, is_burst: false, label: "NORMAL" });
     expect(screen.queryByTestId("burst-indicator")).not.toBeInTheDocument();
   });
 
@@ -80,7 +84,7 @@ describe("F2-U2: Burst indicator not rendered when is_burst is false", () => {
 
 describe("F2-U3: Burst indicator shows SURGE text", () => {
   it("shows SURGE text", () => {
-    renderCard({ rate: 50, baseline: 10, ratio: 5.0, is_burst: true });
+    renderCard({ ratio: 5.0, is_burst: true, label: "SURGE" });
     expect(screen.getByTestId("burst-indicator")).toHaveTextContent("SURGE");
   });
 });
