@@ -259,8 +259,8 @@ def run_clustering(
                 "Zero-norm centroid for HDBSCAN label=%d (%d docs) — skipping cluster",
                 label, len(member_indices),
             )
-            for doc in member_docs:
-                repository.update_candidate_status(doc["doc_id"], "clustered", None)
+            # Leave docs "pending" so they can re-enter the buffer on a later cycle
+            # rather than being permanently excluded by this degenerate cluster.
             continue
 
         narrative_id = str(uuid.uuid4())
@@ -310,10 +310,11 @@ def run_clustering(
                     coherence_score,
                     len(member_indices),
                 )
-                # Mark docs as clustered so they don't re-enter the buffer.
+                # Leave docs "pending" (not "clustered") so they re-enter the
+                # buffer and get a chance to form a different, coherent
+                # cluster on a later cycle instead of being permanently
+                # excluded by this one rejected grouping.
                 # We intentionally do not persist a new narrative on failed coherence.
-                for doc in member_docs:
-                    repository.update_candidate_status(doc["doc_id"], "clustered", None)
                 continue  # skip adding to new_narrative_ids
             else:
                 logger.info(

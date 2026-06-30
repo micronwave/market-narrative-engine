@@ -2753,8 +2753,6 @@ class SqliteRepository(Repository):
                 FROM narratives
                 WHERE suppressed = 0
                   AND stage NOT IN ('Declining', 'Dormant')
-                  AND linked_assets IS NOT NULL
-                  AND linked_assets NOT IN ('[]', '')
             """).fetchall()
             for row in narrative_rows:
                 conn.execute(
