@@ -1,0 +1,321 @@
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-03-16
+C2 — Data model + 4 new API endpoints (narrative detail, constellation, credits get/topup), auth stub (X-Auth-Token header), AuthContext + CreditsContext, /narrative/[id] + /billing routes, Investigate button with credit gating; tests pass — 2026-03-16
+C3 — VelocitySparkline + SaturationMeter + InvestigateDrawer components, useRealtimeData polling hook, POST /api/credits/use + GET /api/stream endpoints, async CreditsContext.decrement(), drawer replaces router.push on Investigate; 91+15 backend + 22 frontend tests pass — 2026-03-17
+C4 — ConstellationMap (pure SVG, circular layout), MutationTimeline (collapse/expand), CreditTopupModal (Stripe-style), SubscriptionContext, /constellation + /signals routes, NavBar, export CSV endpoint, subscription-gated narrative list; 91+15+40 backend + 35 frontend tests pass — 2026-03-17
+Gap fixes — Roboto Mono loaded via next/font (CSS var), SF Pro heading stack, ConstellationMap keyboard nav (tabIndex+role+onKeyDown+focus ring), constellation tooltip description+impact_score, MutationTimeline trigger field; frontend_build_log deduplicated; C4-A1+E2E tests added; 146 backend + 44 frontend tests pass — 2026-03-17
+D1 — Ticker audit (docs/ticker-audit.md), AssetClass/NarrativeAsset/TrackedSecurity model, 3 new API endpoints + /assets field on narrative detail, AffectedAssets component on /narrative/[id], Stocks placeholder nav link; 41 backend + 11 frontend tests pass — 2026-03-17
+D2 — Finnhub REST integration (api/finnhub_service.py), rate-limited cache, background price refresh via @on_event(startup), price display in Affected Assets, graceful no-key degradation; 28 backend + 12 frontend tests pass — 2026-03-17
+D3 — /stocks route, Narrative Impact Score calculation (40/35/25 weighted), filtered/sorted securities table, detail drawer with affecting narratives; 38 backend + 17 frontend tests pass — 2026-03-17
+D4 — /manipulation route with indicator badges + cross-links, monetization UI stripped (backend stubs preserved), NavBar final: Home/Constellation/Signals/Stocks/Manipulation; 44 backend + 89 frontend tests pass — 2026-03-17
+E1 — Design token system (Palantir×Apple), Tailwind config extended, glass/shimmer utilities, semantic color vars; all 89 tests pass — 2026-03-17
+E2 — Glass sidebar nav (desktop 64→220px expand, mobile bottom tab bar), layout shell with lg:ml-16, BlurModal.tsx deleted; all 89 tests pass — 2026-03-17
+E3 — Core components restyled (NarrativeCard, drawers, sparkline, meters, constellation, timeline, assets); all 89 tests pass — 2026-03-17
+E4 — Gateway + narrative detail pages restyled (tokens, sections, entropy grid, banners); all 89 tests pass — 2026-03-17
+E5 — Data view pages restyled (stocks, signals, manipulation, constellation); all 89 tests pass — 2026-03-17
+E6 — Polish pass (final color audit, Ticker/MutationTimeline/ConstellationMap/AffectedAssets cleanup, zero old gray/indigo/emerald classes remain); all 89 tests pass — 2026-03-17
+E7 — Visual differentiation fix: blue left-stripe section headings, button glow-at-rest, stronger nav active state, lighter form inputs, semantic stats colors, blue hover border on cards; all 89 tests pass — 2026-03-17
+F1 — Lifecycle stage engine (Emerging→Growing→Mature→Declining→Dormant), stage badges on NarrativeCard, stage in API response; 20 backend + 94 frontend tests pass — 2026-03-17
+F2 — Burst velocity metric (doc ingestion rate acceleration), pipeline frequency settings, run_pipeline.bat, SURGE indicator on NarrativeCard; 20 backend + 98 frontend tests pass — 2026-03-17
+F3 — Pre-earnings intelligence brief (GET /api/brief/{ticker}), /brief/[ticker] page, /brief index page, StockDetailDrawer brief link; 23 backend + 103 frontend tests pass — 2026-03-17
+F4 — Topic tagging (topic_tags column, LLM tagging hook, GET /api/narratives?topic= filter, topic pills on NarrativeCard, topic filter dropdown on gateway); 14 backend + 105 frontend tests pass — 2026-03-17
+F5 — Historical snapshot API (GET /api/narrative/{id}/history), price data via yfinance (GET /api/ticker/{symbol}/price-history), extended snapshot schema; 13 backend + 105 frontend tests pass — 2026-03-17
+F6 — Velocity-price correlation (scipy Pearson, GET /api/correlation/{id}/{ticker}, interpretation engine, NaN-safe); 19 backend + 105 frontend tests pass — 2026-03-17
+F-fix — Burst velocity wired into pipeline, topic classification wired into pipeline, HistoryChart component + velocity/price history views, /correlation page with lead-time selector + brief page links; 105 frontend tests pass — 2026-03-17
+COMPLETE — C1–C4 + gap fixes + D1–D4 + E1–E7 + F1–F6 + F-fix pass; 495 tests green (406 backend + 105 frontend) — 2026-03-17
+[2026-03-17] C4 backend tests: 39/39 passed
+C2 — Data model + 4 new API endpoints (narrative detail, constellation, credits get/topup), auth stub (X-Auth-Token header), AuthContext + CreditsContext, /narrative/[id] + /billing routes, Investigate button with credit gating; tests pass — 2026-03-17
+C2 — Data model + 4 new API endpoints (narrative detail, constellation, credits get/topup), auth stub (X-Auth-Token header), AuthContext + CreditsContext, /narrative/[id] + /billing routes, Investigate button with credit gating; tests pass — 2026-03-18
+[2026-03-18] C3 backend tests: 15/15 passed
+[2026-03-18] C4 backend tests: 39/39 passed
+[2026-03-18] C3 backend tests: 14/14 passed
+C2 — Data model + 4 new API endpoints (narrative detail, constellation, credits get/topup), auth stub (X-Auth-Token header), AuthContext + CreditsContext, /narrative/[id] + /billing routes, Investigate button with credit gating; tests pass — 2026-03-21
+[2026-03-21] C3 backend tests: 14/14 passed
+[2026-03-21] C4 backend tests: 39/39 passed
+C2 — Data model + 4 new API endpoints (narrative detail, constellation, credits get/topup), auth stub (X-Auth-Token header), AuthContext + CreditsContext, /narrative/[id] + /billing routes, Investigate button with credit gating; tests pass — 2026-03-22
+[2026-03-22] C3 backend tests: 14/14 passed
+[2026-03-22] C4 backend tests: 39/39 passed
+C2 — Data model + 4 new API endpoints (narrative detail, constellation, credits get/topup), auth stub (X-Auth-Token header), AuthContext + CreditsContext, /narrative/[id] + /billing routes, Investigate button with credit gating; tests pass — 2026-03-23
+[2026-03-23] C3 backend tests: 14/14 passed
+[2026-03-23] C4 backend tests: 39/39 passed
+C2 — Data model + 4 new API endpoints (narrative detail, constellation, credits get/topup), auth stub (X-Auth-Token header), AuthContext + CreditsContext, /narrative/[id] + /billing routes, Investigate button with credit gating; tests pass — 2026-03-24
+[2026-03-24] C3 backend tests: 14/14 passed
+[2026-03-24] C4 backend tests: 39/39 passed
+C2 — Data model + 4 new API endpoints (narrative detail, constellation, credits get/topup), auth stub (X-Auth-Token header), AuthContext + CreditsContext, /narrative/[id] + /billing routes, Investigate button with credit gating; tests pass — 2026-03-25
+C2 — Data model + 4 new API endpoints (narrative detail, constellation, credits get/topup), auth stub (X-Auth-Token header), AuthContext + CreditsContext, /narrative/[id] + /billing routes, Investigate button with credit gating; tests pass — 2026-03-27
+C2 — Data model + 4 new API endpoints (narrative detail, constellation, credits get/topup), auth stub (X-Auth-Token header), AuthContext + CreditsContext, /narrative/[id] + /billing routes, Investigate button with credit gating; tests pass — 2026-03-31
+[2026-03-31] C3 backend tests: 14/14 passed
+[2026-03-31] C4 backend tests: 39/39 passed
+C2 — Data model + 4 new API endpoints (narrative detail, constellation, credits get/topup), auth stub (X-Auth-Token header), AuthContext + CreditsContext, /narrative/[id] + /billing routes, Investigate button with credit gating; tests pass — 2026-04-01
+C2 — Data model + 4 new API endpoints (narrative detail, constellation, credits get/topup), auth stub (X-Auth-Token header), AuthContext + CreditsContext, /narrative/[id] + /billing routes, Investigate button with credit gating; tests pass — 2026-04-01
+C2 — Data model + 4 new API endpoints (narrative detail, constellation, credits get/topup), auth stub (X-Auth-Token header), AuthContext + CreditsContext, /narrative/[id] + /billing routes, Investigate button with credit gating; tests pass — 2026-04-01
+
+test_charting_api.py: 23 passed, 3 FAILED
+
+test_charting_api.py: 26 passed, 0 failed
+
+test_charting_api.py: 26 passed, 0 failed
+
+test_charting_api.py: 26 passed, 0 failed
+
+test_charting_api.py: 26 passed, 0 failed
+
+test_charting_api.py: 26 passed, 0 failed
+
+test_sentiment_api.py: 35 passed, 1 FAILED
+
+test_charting_api.py: 26 passed, 0 failed
+
+test_charting_api.py: 26 passed, 0 failed
+C2 — Data model + 4 new API endpoints (narrative detail, constellation, credits get/topup), auth stub (X-Auth-Token header), AuthContext + CreditsContext, /narrative/[id] + /billing routes, Investigate button with credit gating; tests pass — 2026-04-02
+C2 — Data model + 4 new API endpoints (narrative detail, constellation, credits get/topup), auth stub (X-Auth-Token header), AuthContext + CreditsContext, /narrative/[id] + /billing routes, Investigate button with credit gating; tests pass — 2026-04-03
+C2 — Data model + 4 new API endpoints (narrative detail, constellation, credits get/topup), auth stub (X-Auth-Token header), AuthContext + CreditsContext, /narrative/[id] + /billing routes, Investigate button with credit gating; tests pass — 2026-04-03
+C2 — Data model + 4 new API endpoints (narrative detail, constellation, credits get/topup), auth stub (X-Auth-Token header), AuthContext + CreditsContext, /narrative/[id] + /billing routes, Investigate button with credit gating; tests pass — 2026-04-03
+C2 — Data model + 4 new API endpoints (narrative detail, constellation, credits get/topup), auth stub (X-Auth-Token header), AuthContext + CreditsContext, /narrative/[id] + /billing routes, Investigate button with credit gating; tests pass — 2026-04-03
+C2 — Data model + 4 new API endpoints (narrative detail, constellation, credits get/topup), auth stub (X-Auth-Token header), AuthContext + CreditsContext, /narrative/[id] + /billing routes, Investigate button with credit gating; tests pass — 2026-04-03
+C2 — Data model + 4 new API endpoints (narrative detail, constellation, credits get/topup), auth stub (X-Auth-Token header), AuthContext + CreditsContext, /narrative/[id] + /billing routes, Investigate button with credit gating; tests pass — 2026-04-03
+C2 — Data model + 4 new API endpoints (narrative detail, constellation, credits get/topup), auth stub (X-Auth-Token header), AuthContext + CreditsContext, /narrative/[id] + /billing routes, Investigate button with credit gating; tests pass — 2026-04-03
+C2 — Data model + 4 new API endpoints (narrative detail, constellation, credits get/topup), auth stub (X-Auth-Token header), AuthContext + CreditsContext, /narrative/[id] + /billing routes, Investigate button with credit gating; tests pass — 2026-04-03
+C2 — Data model + 4 new API endpoints (narrative detail, constellation, credits get/topup), auth stub (X-Auth-Token header), AuthContext + CreditsContext, /narrative/[id] + /billing routes, Investigate button with credit gating; tests pass — 2026-04-03
+C2 — Data model + 4 new API endpoints (narrative detail, constellation, credits get/topup), auth stub (X-Auth-Token header), AuthContext + CreditsContext, /narrative/[id] + /billing routes, Investigate button with credit gating; tests pass — 2026-04-03
+C2 — Data model + 4 new API endpoints (narrative detail, constellation, credits get/topup), auth stub (X-Auth-Token header), AuthContext + CreditsContext, /narrative/[id] + /billing routes, Investigate button with credit gating; tests pass — 2026-04-03
+C2 — Data model + 4 new API endpoints (narrative detail, constellation, credits get/topup), auth stub (X-Auth-Token header), AuthContext + CreditsContext, /narrative/[id] + /billing routes, Investigate button with credit gating; tests pass — 2026-04-03
+C2 — Data model + 4 new API endpoints (narrative detail, constellation, credits get/topup), auth stub (X-Auth-Token header), AuthContext + CreditsContext, /narrative/[id] + /billing routes, Investigate button with credit gating; tests pass — 2026-04-03
+C2 — Data model + narrative detail/constellation endpoints, monetization routes removed, export local-safe, retained UI API checks pass — 2026-04-25
+[2026-04-25] C3 backend tests: 11/11 passed
+[2026-04-25] C4 backend tests: 32/32 passed
+C2 — Data model + narrative detail/constellation endpoints, monetization routes removed, export local-safe, retained UI API checks pass — 2026-04-25
+C2 — Data model + narrative detail/constellation endpoints, monetization routes removed, export local-safe, retained UI API checks pass — 2026-04-25
+[2026-04-25] C3 backend tests: 11/11 passed
+[2026-04-25] C4 backend tests: 32/32 passed
+C2 — Data model + narrative detail/constellation endpoints, monetization routes removed, export local-safe, retained UI API checks pass — 2026-04-25
+[2026-04-25] C3 backend tests: 11/11 passed
+[2026-04-25] C4 backend tests: 32/32 passed
+C2 — Data model + narrative detail/constellation endpoints, monetization routes removed, export local-safe, retained UI API checks pass — 2026-04-25
+[2026-04-25] C3 backend tests: 11/11 passed
+[2026-04-25] C4 backend tests: 32/32 passed
+C2 — Data model + narrative detail/constellation endpoints, monetization routes removed, export local-safe, retained UI API checks pass — 2026-05-04
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-05-04
+[2026-05-04] C3 backend tests: 14/14 passed
+[2026-05-04] C3 backend tests: 14/14 passed
+C2 — Data model + narrative detail/constellation endpoints, monetization routes removed, export local-safe, retained UI API checks pass — 2026-05-04
+C2 — Data model + narrative detail/constellation endpoints, monetization routes removed, export local-safe, retained UI API checks pass — 2026-05-04
+C2 — Data model + narrative detail/constellation endpoints, monetization routes removed, export local-safe, retained UI API checks pass — 2026-05-04
+[2026-05-04] C3 backend tests: 14/14 passed
+[2026-05-04] C3 backend tests: 14/14 passed
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-05-04
+C2 — Data model + narrative detail/constellation endpoints, monetization routes removed, export local-safe, retained UI API checks pass — 2026-05-04
+[2026-05-04] C3 backend tests: 14/14 passed
+[2026-05-04] C4 backend tests: 32/32 passed
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-05-04
+C2 — Data model + narrative detail/constellation endpoints, monetization routes removed, export local-safe, retained UI API checks pass — 2026-05-04
+[2026-05-04] C3 backend tests: 14/14 passed
+[2026-05-04] C4 backend tests: 32/32 passed
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-05-04
+C2 — Data model + narrative detail/constellation endpoints, monetization routes removed, export local-safe, retained UI API checks pass — 2026-05-04
+[2026-05-04] C3 backend tests: 14/14 passed
+[2026-05-04] C4 backend tests: 32/32 passed
+[2026-05-04] C3 backend tests: 14/14 passed
+[2026-05-04] C3 backend tests: 14/14 passed
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-05-04
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-05-04
+C2 — Data model + narrative detail/constellation endpoints, monetization routes removed, export local-safe, retained UI API checks pass — 2026-05-04
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-05-04
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-05-04
+C2 — Data model + narrative detail/constellation endpoints, monetization routes removed, export local-safe, retained UI API checks pass — 2026-05-04
+[2026-05-04] C3 backend tests: 14/14 passed
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-05-04
+C2 — Data model + narrative detail/constellation endpoints, monetization routes removed, export local-safe, retained UI API checks pass — 2026-05-04
+[2026-05-04] C3 backend tests: 14/14 passed
+[2026-05-04] C4 backend tests: 32/32 passed
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-05-04
+C2 — Data model + narrative detail/constellation endpoints, monetization routes removed, export local-safe, retained UI API checks pass — 2026-05-04
+[2026-05-04] C3 backend tests: 14/14 passed
+[2026-05-04] C4 backend tests: 32/32 passed
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-05-04
+C2 — Data model + narrative detail/constellation endpoints, monetization routes removed, export local-safe, retained UI API checks pass — 2026-05-04
+[2026-05-04] C3 backend tests: 14/14 passed
+[2026-05-04] C4 backend tests: 32/32 passed
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-05-04
+C2 — Data model + narrative detail/constellation endpoints, monetization routes removed, export local-safe, retained UI API checks pass — 2026-05-04
+[2026-05-04] C3 backend tests: 14/14 passed
+[2026-05-04] C4 backend tests: 32/32 passed
+
+test_charting_api.py: 26 passed, 0 failed
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-05-04
+C2 — Data model + narrative detail/constellation endpoints, monetization routes removed, export local-safe, retained UI API checks pass — 2026-05-04
+[2026-05-04] C3 backend tests: 14/14 passed
+[2026-05-04] C4 backend tests: 32/32 passed
+
+test_charting_api.py: 26 passed, 0 failed
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-05-04
+C2 — Data model + narrative detail/constellation endpoints, monetization routes removed, export local-safe, retained UI API checks pass — 2026-05-04
+[2026-05-04] C3 backend tests: 14/14 passed
+[2026-05-04] C4 backend tests: 32/32 passed
+
+test_charting_api.py: 26 passed, 0 failed
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-05-04
+C2 — Data model + narrative detail/constellation endpoints, monetization routes removed, export local-safe, retained UI API checks pass — 2026-05-04
+[2026-05-04] C3 backend tests: 14/14 passed
+[2026-05-04] C4 backend tests: 32/32 passed
+
+test_charting_api.py: 26 passed, 0 failed
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-05-04
+C2 — Data model + narrative detail/constellation endpoints, monetization routes removed, export local-safe, retained UI API checks pass — 2026-05-04
+[2026-05-04] C3 backend tests: 14/14 passed
+[2026-05-04] C4 backend tests: 32/32 passed
+
+test_charting_api.py: 26 passed, 0 failed
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-05-04
+C2 — Data model + narrative detail/constellation endpoints, monetization routes removed, export local-safe, retained UI API checks pass — 2026-05-04
+[2026-05-04] C3 backend tests: 14/14 passed
+[2026-05-04] C4 backend tests: 32/32 passed
+
+test_charting_api.py: 26 passed, 0 failed
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-05-04
+C2 — Data model + narrative detail/constellation endpoints, monetization routes removed, export local-safe, retained UI API checks pass — 2026-05-04
+[2026-05-04] C3 backend tests: 14/14 passed
+[2026-05-04] C4 backend tests: 32/32 passed
+
+test_charting_api.py: 26 passed, 0 failed
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-05-04
+C2 — Data model + narrative detail/constellation endpoints, monetization routes removed, export local-safe, retained UI API checks pass — 2026-05-04
+[2026-05-04] C3 backend tests: 14/14 passed
+[2026-05-04] C4 backend tests: 32/32 passed
+
+test_charting_api.py: 26 passed, 0 failed
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-05-04
+C2 — Data model + narrative detail/constellation endpoints, monetization routes removed, export local-safe, retained UI API checks pass — 2026-05-04
+[2026-05-04] C3 backend tests: 14/14 passed
+[2026-05-04] C4 backend tests: 32/32 passed
+
+test_charting_api.py: 26 passed, 0 failed
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-05-04
+C2 — Data model + narrative detail/constellation endpoints, monetization routes removed, export local-safe, retained UI API checks pass — 2026-05-04
+[2026-05-04] C3 backend tests: 14/14 passed
+[2026-05-04] C4 backend tests: 32/32 passed
+
+test_charting_api.py: 26 passed, 0 failed
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-05-04
+C2 — Data model + narrative detail/constellation endpoints, monetization routes removed, export local-safe, retained UI API checks pass — 2026-05-04
+[2026-05-04] C3 backend tests: 14/14 passed
+[2026-05-04] C4 backend tests: 32/32 passed
+
+test_charting_api.py: 26 passed, 0 failed
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-05-04
+C2 — Data model + narrative detail/constellation endpoints, monetization routes removed, export local-safe, retained UI API checks pass — 2026-05-04
+[2026-05-04] C3 backend tests: 14/14 passed
+[2026-05-04] C4 backend tests: 32/32 passed
+
+test_charting_api.py: 26 passed, 0 failed
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-05-04
+C2 — Data model + narrative detail/constellation endpoints, monetization routes removed, export local-safe, retained UI API checks pass — 2026-05-04
+[2026-05-04] C3 backend tests: 14/14 passed
+[2026-05-04] C4 backend tests: 32/32 passed
+
+test_charting_api.py: 26 passed, 0 failed
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-05-04
+C2 — Data model + narrative detail/constellation endpoints, monetization routes removed, export local-safe, retained UI API checks pass — 2026-05-04
+[2026-05-04] C3 backend tests: 14/14 passed
+[2026-05-04] C4 backend tests: 32/32 passed
+
+test_charting_api.py: 26 passed, 0 failed
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-05-04
+C2 — Data model + narrative detail/constellation endpoints, monetization routes removed, export local-safe, retained UI API checks pass — 2026-05-04
+[2026-05-04] C3 backend tests: 14/14 passed
+[2026-05-04] C4 backend tests: 32/32 passed
+
+test_charting_api.py: 26 passed, 0 failed
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-05-04
+C2 — Data model + narrative detail/constellation endpoints, monetization routes removed, export local-safe, retained UI API checks pass — 2026-05-04
+[2026-05-04] C3 backend tests: 14/14 passed
+[2026-05-04] C4 backend tests: 32/32 passed
+
+test_charting_api.py: 26 passed, 0 failed
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-05-04
+C2 — Data model + narrative detail/constellation endpoints, monetization routes removed, export local-safe, retained UI API checks pass — 2026-05-04
+[2026-05-04] C3 backend tests: 14/14 passed
+[2026-05-04] C4 backend tests: 32/32 passed
+
+test_charting_api.py: 26 passed, 0 failed
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-05-04
+C2 — Data model + narrative detail/constellation endpoints, monetization routes removed, export local-safe, retained UI API checks pass — 2026-05-04
+[2026-05-04] C3 backend tests: 14/14 passed
+[2026-05-04] C4 backend tests: 32/32 passed
+
+test_charting_api.py: 26 passed, 0 failed
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-05-04
+C2 — Data model + narrative detail/constellation endpoints, monetization routes removed, export local-safe, retained UI API checks pass — 2026-05-04
+[2026-05-04] C3 backend tests: 14/14 passed
+[2026-05-04] C4 backend tests: 32/32 passed
+
+test_charting_api.py: 26 passed, 0 failed
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-05-04
+C2 — Data model + narrative detail/constellation endpoints, monetization routes removed, export local-safe, retained UI API checks pass — 2026-05-04
+[2026-05-04] C3 backend tests: 14/14 passed
+[2026-05-04] C4 backend tests: 32/32 passed
+
+test_charting_api.py: 26 passed, 0 failed
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-05-04
+C2 — Data model + narrative detail/constellation endpoints, monetization routes removed, export local-safe, retained UI API checks pass — 2026-05-04
+[2026-05-04] C3 backend tests: 14/14 passed
+[2026-05-04] C4 backend tests: 32/32 passed
+
+test_charting_api.py: 26 passed, 0 failed
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-05-04
+C2 — Data model + narrative detail/constellation endpoints, monetization routes removed, export local-safe, retained UI API checks pass — 2026-05-04
+[2026-05-04] C3 backend tests: 14/14 passed
+[2026-05-04] C4 backend tests: 32/32 passed
+
+test_charting_api.py: 26 passed, 0 failed
+
+test_sentiment_api.py: 38 passed, 1 FAILED
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-05-05
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-05-05
+<<<<<<< Updated upstream
+=======
+C2 — Data model + narrative detail/constellation endpoints, monetization routes removed, export local-safe, retained UI API checks pass — 2026-05-05
+C2 — Data model + narrative detail/constellation endpoints, monetization routes removed, export local-safe, retained UI API checks pass — 2026-05-05
+C2 — Data model + narrative detail/constellation endpoints, monetization routes removed, export local-safe, retained UI API checks pass — 2026-05-05
+C2 — Data model + narrative detail/constellation endpoints, monetization routes removed, export local-safe, retained UI API checks pass — 2026-05-05
+C2 — Data model + narrative detail/constellation endpoints, monetization routes removed, export local-safe, retained UI API checks pass — 2026-05-05
+[2026-05-05] C3 backend tests: 14/14 passed
+>>>>>>> Stashed changes
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-05-06
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-05-06
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-05-06
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-05-06
+C2 — Data model + narrative detail/constellation endpoints, monetization routes removed, export local-safe, retained UI API checks pass — 2026-05-06
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-05-06
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-05-06
+C2 — Data model + narrative detail/constellation endpoints, monetization routes removed, export local-safe, retained UI API checks pass — 2026-05-06
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-05-06
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-05-06
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-05-06
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-05-06
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-05-06
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-05-06
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-05-06
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-05-06
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-05-06
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-05-06
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-05-06
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-05-06
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-05-06
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-05-06
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-05-06
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-05-06
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-05-07
+C2 — Data model + narrative detail/constellation endpoints, monetization routes removed, export local-safe, retained UI API checks pass — 2026-05-07
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-05-07
+[2026-05-07] C3 backend tests: 14/14 passed
+[2026-05-07] C4 backend tests: 32/32 passed
+
+test_charting_api.py: 26 passed, 0 failed
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-05-07
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-05-16
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-06-14
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-06-29
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-06-29
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-06-29
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-06-30
+C1 — FastAPI skeleton (health/narratives/ticker endpoints, port 8000), Next.js gateway with live ticker + 3 visible + 6 blurred NarrativeCards + CTA modal; real DB data (top 3 by ns_score visible); tests pass — 2026-06-30

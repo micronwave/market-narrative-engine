@@ -236,7 +236,7 @@ u8_candidates = extract_known_tickers(" ".join(u8_excerpts))
 u8_fallback = [t for t in u8_candidates if _accept_fallback_ticker(u8_excerpts, t)]
 T("strong fallback forms kept", "AAPL" in u8_fallback and "MSFT" in u8_fallback, f"got {u8_fallback}")
 T("plain single mention still rejected", "NKE" not in u8_fallback, f"got {u8_fallback}")
-S("SP7-FBP-U9: swing signal excludes text mentions by default")
+S("SP7-FBP-U9: swing signal text_mention gate — two-source corroboration")
 _swing_narrative = {
     "narrative_id": "n-swing-text",
     "linked_assets": json.dumps([
@@ -250,14 +250,27 @@ _swing_narrative = {
     "velocity_windowed": 0.2,
     "document_count": 12,
 }
+# No impact_assets → text_mention still excluded (no corroboration).
 _swing_candidates_default = build_candidates([_swing_narrative], {}, {}, {}, "any")
-T("text_mention ticker excluded from swing candidates",
+T("text_mention excluded when not corroborated by impact_assets",
   [c["ticker"] for c in _swing_candidates_default] == ["AAPL"],
   f"got {[c['ticker'] for c in _swing_candidates_default]}")
+
+# impact_assets corroborates NKE → text_mention passes gate.
+_impact_assets_nke = {"n-swing-text": [{"ticker": "NKE", "impact_direction": "bullish"}]}
+_swing_candidates_corroborated = build_candidates(
+    [_swing_narrative], {}, {}, {}, "any",
+    impact_assets=_impact_assets_nke,
+)
+T("text_mention passes when corroborated by impact_assets",
+  sorted(c["ticker"] for c in _swing_candidates_corroborated) == ["AAPL", "NKE"],
+  f"got {sorted(c['ticker'] for c in _swing_candidates_corroborated)}")
+
+# allow_text_mentions bypasses gate entirely (debug path still works).
 _swing_candidates_allowed = build_candidates(
     [_swing_narrative], {}, {}, {}, "any", allow_text_mentions=True,
 )
-T("allow_text_mentions includes text fallback ticker",
+T("allow_text_mentions includes text fallback ticker unconditionally",
   sorted(c["ticker"] for c in _swing_candidates_allowed) == ["AAPL", "NKE"],
   f"got {sorted(c['ticker'] for c in _swing_candidates_allowed)}")
 
