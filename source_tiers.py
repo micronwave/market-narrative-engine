@@ -169,7 +169,7 @@ def compute_source_escalation(evidence: list[dict] | None) -> dict:
         escalation_velocity = 0.0
     else:
         hours_since_first = (now - earliest_ts).total_seconds() / 3600.0
-        escalation_velocity = (5 - highest_tier) / max(hours_since_first, 0.1)
+        escalation_velocity = min((5 - highest_tier) / max(hours_since_first, 0.1), 1.0)
 
     # Institutional pickup: any tier 1/2 evidence published within 24h
     is_institutional_pickup = False

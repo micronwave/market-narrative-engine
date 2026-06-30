@@ -207,6 +207,10 @@ def compute_velocity(
     diff = centroid_today - centroid_yesterday
     mag_diff = float(np.linalg.norm(diff))
     mag_yesterday = float(np.linalg.norm(centroid_yesterday))
+    if mag_yesterday < 1e-6:
+        # Centroid has decayed to near-zero; any ratio would be astronomically large
+        # and meaningless. Treat as zero velocity until the narrative accumulates mass.
+        return 0.0
     return mag_diff / (mag_yesterday + 1e-9)
 
 
@@ -288,13 +292,17 @@ def extract_known_tickers(text: str, min_length: int = 2) -> list[str]:
     )
 
 
-def _accept_fallback_ticker(excerpts: list[str], ticker: str) -> bool:
+def _accept_fallback_ticker(
+    excerpts: list[str], ticker: str, company_name: str | None = None
+) -> bool:
     """Return True when fallback evidence for ticker is strong enough.
 
     Accept if:
       - any excerpt contains $TICKER
       - any excerpt contains (TICKER) with optional internal whitespace
       - ticker appears as plain uppercase token in >=2 distinct excerpts
+        AND the first meaningful word of company_name also appears in the
+        combined excerpt text
     """
     escaped = re.escape(ticker)
     blob = " ".join(excerpts)
@@ -305,7 +313,15 @@ def _accept_fallback_ticker(excerpts: list[str], ticker: str) -> bool:
         return True
 
     plain_hit_excerpts = sum(1 for ex in excerpts if re.search(rf"\b{escaped}\b", ex))
-    return plain_hit_excerpts >= 2
+    if plain_hit_excerpts >= 2:
+        if company_name is None:
+            return False
+        first_token = company_name.split()[0] if company_name else ""
+        m = re.match(r"[A-Za-z]+", first_token)
+        first_word = m.group(0).lower() if m else ""
+        return len(first_word) > 3 and first_word in blob.lower()
+
+    return False
 
 
 def compute_intent_weight(documents: list[str]) -> float:

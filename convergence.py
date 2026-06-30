@@ -125,8 +125,11 @@ def compute_ticker_convergence(
             tiers.add(tier)
     source_diversity = len(tiers)
 
-    # --- Pressure score: compound signal strength ---
-    pressure_score = convergence_count * direction_consensus * weighted_confidence
+    # --- Pressure score: compound signal strength, bounded [0, 1] ---
+    # convergence_count is normalized against a ceiling of 5 independent narratives;
+    # beyond that, additional agreement yields no further score increase.
+    convergence_norm = min(convergence_count / 5.0, 1.0)
+    pressure_score = convergence_norm * direction_consensus * weighted_confidence
 
     return {
         "convergence_count": convergence_count,

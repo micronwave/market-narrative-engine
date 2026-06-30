@@ -97,6 +97,7 @@ def run_clustering(
     min_samples = getattr(settings, 'HDBSCAN_MIN_SAMPLES', _MIN_SAMPLES)
     pipeline_frequency_hours = getattr(settings, "PIPELINE_FREQUENCY_HOURS", 4)
     cycle_slot = format_cycle_slot(datetime.now(timezone.utc), pipeline_frequency_hours)
+    sparse_retry_limit = max(int(getattr(settings, "CLUSTER_SPARSE_RETRY_LIMIT", 3) or 3), 1)
 
     pending_cap = int(getattr(settings, "CLUSTER_MAX_PENDING_BATCH", 0) or 0)
     if pending_cap <= 0:
@@ -148,6 +149,13 @@ def run_clustering(
         )
         return []
 
+    attempted_at = datetime.now(timezone.utc).isoformat()
+    if hasattr(repository, "increment_candidate_cluster_attempts"):
+        try:
+            repository.increment_candidate_cluster_attempts([c["doc_id"] for c in valid_candidates], attempted_at)
+        except Exception as exc:
+            logger.warning("Could not persist cluster attempt counts: %s", exc)
+
     pending_array = np.array(pending_embeddings, dtype=np.float32)  # (N_pending, D)
     n_pending = len(pending_array)
 
@@ -187,7 +195,25 @@ def run_clustering(
     unique_cluster_labels = set(pending_labels) - {-1}
 
     if not unique_cluster_labels:
-        logger.info("HDBSCAN found no clusters in current buffer")
+        deferred_count = 0
+        if hasattr(repository, "defer_candidate_buffer_docs"):
+            retry_exhausted_ids = [
+                doc["doc_id"] for doc in valid_candidates
+                if int(doc.get("cluster_attempt_count") or 0) + 1 >= sparse_retry_limit
+            ]
+            if retry_exhausted_ids:
+                try:
+                    deferred_count = repository.defer_candidate_buffer_docs(retry_exhausted_ids)
+                except Exception as exc:
+                    logger.warning("Could not defer sparse cluster candidates: %s", exc)
+        if deferred_count > 0:
+            logger.error(
+                "HDBSCAN found no clusters in current buffer; deferred %d repeatedly sparse candidates after %d attempts",
+                deferred_count,
+                sparse_retry_limit,
+            )
+        else:
+            logger.warning("HDBSCAN found no clusters in current buffer")
         return []
 
     # Pre-flight check: ensure vector store is writable before DB transaction work.

@@ -116,18 +116,37 @@ def validate_output(output: dict) -> bool:
         )
         return False
 
-    # Check 2: domains non-empty when evidence present
-    has_evidence = bool(output.get("supporting_evidence"))
-    has_domains = bool(output.get("source_attribution_metadata", {}).get("domains"))
-    if has_evidence and not has_domains:
+    # Check 2: every evidence row must carry source attribution
+    evidence_rows = output.get("supporting_evidence") or []
+    for idx, row in enumerate(evidence_rows):
+        if not isinstance(row, dict):
+            logger.error(
+                "validate_output: supporting_evidence[%d] is not an object for narrative_id=%s",
+                idx,
+                nid,
+            )
+            return False
+        source_url = str(row.get("source_url") or "").strip()
+        source_domain = str(row.get("source_domain") or "").strip()
+        if not source_url or not source_domain:
+            logger.error(
+                "validate_output: supporting_evidence[%d] missing source_url/source_domain for narrative_id=%s",
+                idx,
+                nid,
+            )
+            return False
+
+    # Check 3: metadata domains must exactly cover attributed evidence domains
+    evidence_domains = sorted({str(row.get("source_domain") or "").strip() for row in evidence_rows if str(row.get("source_domain") or "").strip()})
+    metadata_domains = sorted(str(d or "").strip() for d in (output.get("source_attribution_metadata", {}).get("domains") or []) if str(d or "").strip())
+    if evidence_rows and metadata_domains != evidence_domains:
         logger.error(
-            "validate_output: source_attribution_metadata.domains is empty "
-            "despite non-empty supporting_evidence for narrative_id=%s",
+            "validate_output: source_attribution_metadata.domains does not match supporting_evidence domains for narrative_id=%s",
             nid,
         )
         return False
 
-    # Check 3: valid UUID
+    # Check 4: valid UUID
     try:
         uuid.UUID(str(nid))
     except (ValueError, AttributeError):
@@ -139,13 +158,19 @@ def validate_output(output: dict) -> bool:
     return True
 
 
-def write_outputs(outputs: list[dict], date: str) -> None:
+def write_outputs(
+    outputs: list[dict],
+    date: str,
+    *,
+    pipeline_cycle_id: str | None = None,
+    committed_at: str | None = None,
+) -> None:
     """
     Write validated narrative output objects to:
       ./data/outputs/{date}/narratives.json   (file)
       stdout                                  (print)
 
-    If outputs is empty, emits [] and logs INFO.
+    If outputs is empty, emits [] unless pipeline freshness metadata is supplied.
     If a narrative fails validation it is excluded (pipeline does not crash).
     """
     if not outputs:
@@ -158,7 +183,17 @@ def write_outputs(outputs: list[dict], date: str) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / "narratives.json"
 
-    serialized = json.dumps(outputs, indent=2, ensure_ascii=False, default=str)
+    payload: list[dict] | dict
+    if pipeline_cycle_id:
+        payload = {
+            "pipeline_cycle_id": pipeline_cycle_id,
+            "committed_at": committed_at or datetime.now(timezone.utc).isoformat(),
+            "narratives": outputs,
+        }
+    else:
+        payload = outputs
+
+    serialized = json.dumps(payload, indent=2, ensure_ascii=False, default=str)
 
     tmp_fd, tmp_path = tempfile.mkstemp(dir=str(out_dir), suffix=".json.tmp")
     try:

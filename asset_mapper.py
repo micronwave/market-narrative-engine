@@ -22,6 +22,17 @@ TOPIC_SECTOR_RELEVANCE: dict[str, set[str]] = {
 }
 
 
+def _infer_asset_type(ticker: str, asset_name: str) -> str:
+    name_lower = (asset_name or "").lower()
+    ticker_upper = (ticker or "").upper()
+    if ticker_upper.startswith("TOPIC:"):
+        return "topic"
+    etf_markers = (" etf", " fund", " trust", "ishares", "spdr", "vanguard", "proshares", "invesco", "ark ")
+    if any(marker in name_lower for marker in etf_markers):
+        return "etf"
+    return "equity"
+
+
 class AssetMapper:
     """
     Maps narratives to financial assets via embedding similarity.
@@ -102,7 +113,7 @@ class AssetMapper:
         If topic_tags specify a narrow domain and sector_map is provided,
         tickers whose sector is irrelevant to the topic are suppressed.
 
-        Returns: [{'ticker': str, 'asset_name': str, 'similarity_score': float}]
+        Returns: [{'ticker': str, 'asset_name': str, 'asset_type': str, 'similarity_score': float}]
         Results are ordered by descending similarity and filtered to >= min_similarity.
         """
         if self._index is None or self._index.ntotal == 0:
@@ -149,6 +160,7 @@ class AssetMapper:
                 {
                     "ticker": ticker,
                     "asset_name": self._names[idx],
+                    "asset_type": _infer_asset_type(ticker, self._names[idx]),
                     "similarity_score": sim,
                 }
             )
@@ -159,3 +171,11 @@ class AssetMapper:
     def get_all_tickers(self) -> list[str]:
         """Returns all ticker symbols in the asset library (excludes TOPIC: entries)."""
         return [t for t in self._tickers if not t.startswith("TOPIC:")]
+
+    def get_name(self, ticker: str) -> str | None:
+        """Return the asset name for a ticker, or None if not in the library."""
+        try:
+            idx = self._tickers.index(ticker)
+            return self._names[idx]
+        except ValueError:
+            return None

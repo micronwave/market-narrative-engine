@@ -50,9 +50,7 @@ class MutationDetector:
 
         today = datetime.now(timezone.utc).date().isoformat()
 
-        # Check if a snapshot already exists for today (upsert)
-        existing = self.repository.get_snapshot(narrative_id, today)
-        snapshot_id = existing["id"] if existing else str(uuid.uuid4())
+        snapshot_id = str(uuid.uuid4())
 
         snapshot = {
             "id": snapshot_id,
@@ -82,6 +80,7 @@ class MutationDetector:
             "source_count": narrative.get("source_count"),
             "weighted_source_score": narrative.get("weighted_source_score"),
             "created_at": datetime.now(timezone.utc).isoformat(),
+            "pipeline_cycle_id": self.pipeline_run_id or f"{today}:legacy",
         }
 
         self.repository.save_snapshot(snapshot)
