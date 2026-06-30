@@ -12,7 +12,6 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeou
 # Shared executor — prevents per-call thread pool creation (C3 hardening)
 _BATCH_EXECUTOR = ThreadPoolExecutor(max_workers=5)
 from datetime import datetime
-from typing import Optional
 
 from pydantic import BaseModel
 
@@ -25,11 +24,11 @@ class NormalizedQuote(BaseModel):
     symbol: str
     instrument_type: str  # equity, crypto, forex, etf, option
     price: float
-    open: Optional[float] = None
-    high: Optional[float] = None
-    low: Optional[float] = None
-    close: Optional[float] = None
-    volume: Optional[float] = None
+    open: float | None = None
+    high: float | None = None
+    low: float | None = None
+    close: float | None = None
+    volume: float | None = None
     timestamp: datetime
     source: str  # finnhub, twelve_data, coingecko, yfinance
     delay: str  # realtime, delayed_15m, eod
@@ -90,7 +89,7 @@ class DataNormalizer:
 
     def get_quote(
         self, symbol: str, instrument_type: str = "equity", source: str = "unknown"
-    ) -> Optional[NormalizedQuote]:
+    ) -> NormalizedQuote | None:
         for adapter in self._ordered_adapters(instrument_type):
             breaker = self._breakers.get(id(adapter))
             if breaker and breaker.is_open:
@@ -128,10 +127,10 @@ class DataNormalizer:
 
     def get_quotes_batch(
         self, symbols: list[str], instrument_type: str = "equity"
-    ) -> dict[str, Optional[NormalizedQuote]]:
-        results: dict[str, Optional[NormalizedQuote]] = {}
+    ) -> dict[str, NormalizedQuote | None]:
+        results: dict[str, NormalizedQuote | None] = {}
 
-        def _fetch_one(symbol: str) -> tuple[str, Optional[NormalizedQuote]]:
+        def _fetch_one(symbol: str) -> tuple[str, NormalizedQuote | None]:
             return symbol, self.get_quote(symbol, instrument_type)
 
         futures = {_BATCH_EXECUTOR.submit(_fetch_one, sym): sym for sym in symbols}
