@@ -1317,3 +1317,21 @@ export async function compareNarrativeSnapshots(narrativeId: string, date1: stri
   if (!res.ok) throw new Error(`compare failed: ${res.status}`);
   return res.json();
 }
+
+export async function fetchNarrativeCoordination(narrativeId: string): Promise<CoordinationData & { narrative_id: string; flag_count: number }> {
+  const res = await fetch(`/api/narratives/${encodeURIComponent(narrativeId)}/coordination`, { headers: authHeaders(), credentials: "include" });
+  if (!res.ok) throw new Error(`coordination fetch failed: ${res.status}`);
+  return res.json();
+}
+
+export async function fetchNarrativeDocuments(narrativeId: string, limit = 10, offset = 0): Promise<{ items: Record<string, unknown>[]; total: number; limit: number; offset: number }> {
+  const res = await fetch(`/api/narratives/${encodeURIComponent(narrativeId)}/documents?limit=${limit}&offset=${offset}`, { headers: authHeaders(), credentials: "include" });
+  if (!res.ok) throw new Error(`documents fetch failed: ${res.status}`);
+  return res.json();
+}
+
+export async function fetchNarrativeTimeline(narrativeId: string, days = 30): Promise<{ narrative_id: string; timeline: TimelineEntry[] }> {
+  const res = await fetch(`/api/narratives/${encodeURIComponent(narrativeId)}/timeline?days=${days}`, { headers: authHeaders(), credentials: "include" });
+  if (!res.ok) throw new Error(`timeline fetch failed: ${res.status}`);
+  return res.json();
+}
