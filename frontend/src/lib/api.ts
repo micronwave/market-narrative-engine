@@ -1310,3 +1310,10 @@ export async function fetchSocialDetail(ticker: string): Promise<{
   if (!res.ok) throw new Error(`social detail fetch failed: ${res.status}`);
   return res.json();
 }
+
+export async function compareNarrativeSnapshots(narrativeId: string, date1: string, date2: string): Promise<Record<string, unknown>> {
+  const params = new URLSearchParams({ date1, date2 });
+  const res = await fetch(`/api/narratives/${encodeURIComponent(narrativeId)}/compare?${params}`, { headers: authHeaders(), credentials: "include" });
+  if (!res.ok) throw new Error(`compare failed: ${res.status}`);
+  return res.json();
+}
