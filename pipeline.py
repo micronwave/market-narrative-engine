@@ -854,6 +854,9 @@ def run() -> None:
             alpha = settings.CENTROID_ALPHA
             floor = settings.ASSIGNMENT_SIMILARITY_FLOOR
 
+            # Filter to docs that have valid embeddings (zero-norm docs skipped in Step 6)
+            surviving_docs = [d for d in surviving_docs if d.doc_id in doc_embeddings]
+
             if vector_store.is_empty():
                 logger.info(
                     "Step 7: VectorStore empty — buffering all %d documents",
@@ -884,6 +887,8 @@ def run() -> None:
                         ).fetchall()
                     }
 
+                # Only process docs that have a valid embedding (zero-norm ones were skipped in Step 6)
+                surviving_docs = [d for d in surviving_docs if d.doc_id in doc_embeddings]
                 _batch_embs = np.stack([doc_embeddings[d.doc_id] for d in surviving_docs])
                 _batch_results = vector_store.batch_search(_batch_embs)
 
@@ -913,7 +918,9 @@ def run() -> None:
                             buffered_count += 1
                             continue
 
-                        # Momentum centroid update
+                        # Momentum centroid update (vector store is in-memory; DB write is
+                        # bundled into the atomic persist below)
+                        centroid_history_entry = None
                         old_vec = vector_store.get_vector(narrative_id)
                         if old_vec is not None:
                             new_vec = ((1 - alpha) * old_vec + alpha * emb).astype(np.float32)
@@ -921,32 +928,30 @@ def run() -> None:
                             if norm > 0:
                                 new_vec = new_vec / norm
                             vector_store.update(narrative_id, new_vec)
-                            repository.insert_centroid_history(
-                                narrative_id, cycle_slot, new_vec.tobytes()
-                            )
+                            centroid_history_entry = {"date": cycle_slot, "blob": new_vec.tobytes()}
 
-                        repository.record_narrative_assignment(
-                            narrative_id,
-                            today,
-                            doc.doc_id,
-                            cycle_id,
+                        # Atomic: assignment + narrative update + evidence in one transaction
+                        repository.persist_document_assignment(
+                            narrative_id=narrative_id,
+                            date=today,
+                            doc_id=doc.doc_id,
+                            pipeline_cycle_id=cycle_id,
+                            narrative_update={
+                                "last_assignment_date": today,
+                                "last_updated_at": now_iso,
+                            },
+                            evidence={
+                                "narrative_id": narrative_id,
+                                "doc_id": doc.doc_id,
+                                "source_url": doc.source_url,
+                                "source_domain": doc.source_domain,
+                                "published_at": doc.published_at,
+                                "author": doc.author,
+                                "excerpt": doc.raw_text[:500],
+                                "pipeline_cycle_id": cycle_id,
+                            },
+                            centroid_history=centroid_history_entry,
                         )
-                        repository.update_narrative(narrative_id, {
-                            "last_assignment_date": today,
-                            "last_updated_at": now_iso,
-                        })
-
-                        # Store evidence for output and signal computation
-                        repository.insert_document_evidence({
-                            "narrative_id": narrative_id,
-                            "doc_id": doc.doc_id,
-                            "source_url": doc.source_url,
-                            "source_domain": doc.source_domain,
-                            "published_at": doc.published_at,
-                            "author": doc.author,
-                            "excerpt": doc.raw_text[:500],
-                            "pipeline_cycle_id": cycle_id,
-                        })
 
                         narrative_assigned_docs.setdefault(narrative_id, []).append(doc.doc_id)
                         assigned_count += 1
@@ -994,6 +999,12 @@ def run() -> None:
             # Do NOT renormalize: scaling a unit vector then renormalizing is a no-op.
             decayed = (old_vec * (1 - alpha)).astype(np.float32)
             vector_store.update(narrative_id, decayed)
+            # Snapshot so velocity computation reflects the decay movement, not just
+            # assignment-time updates. Failure is non-fatal; skip silently.
+            try:
+                repository.insert_centroid_history(narrative_id, today, decayed.tobytes())
+            except Exception:
+                pass
 
         logger.info("Step 8: decayed %d narratives", len(decay_ids))
         step_duration = (time.monotonic() - step_start) * 1000
@@ -1357,6 +1368,11 @@ def run() -> None:
                     # Fallback: established narrative with docs but no snapshot history
                     if baseline_per_cycle <= 0 and doc_count > 0:
                         baseline_per_cycle = max(doc_count / (7.0 * cycles_per_day), 1.0)
+                    # Floor: a tiny but non-zero baseline (e.g. 0.01 docs/cycle) would make
+                    # a single new doc produce a 100× burst ratio.  Mirror the 1-doc floor
+                    # that compute_inflow_velocity already applies.
+                    elif 0 < baseline_per_cycle < 1.0:
+                        baseline_per_cycle = 1.0
                     burst = compute_burst_velocity(
                         recent_doc_count=new_assignment_count,
                         baseline_docs_per_window=baseline_per_cycle,
@@ -1383,6 +1399,33 @@ def run() -> None:
                     repository.update_narrative(narrative_id, {"public_interest": public_interest})
                 except Exception as exc:
                     logger.debug("Public interest skipped for %s: %s", narrative_id, exc)
+
+                # Write a pipeline snapshot every cycle so get_baseline_doc_rate has real
+                # doc-count history to work with (without this, snapshots only existed when
+                # mutations.py ran, leaving baselines stale between mutation-detection passes).
+                try:
+                    repository.save_snapshot({
+                        "id": str(uuid.uuid4()),
+                        "narrative_id": narrative_id,
+                        "snapshot_date": today,
+                        "pipeline_cycle_id": cycle_id,
+                        "doc_count": doc_count,
+                        "ns_score": narrative.get("ns_score"),
+                        "velocity": velocity,
+                        "velocity_windowed": velocity_windowed,
+                        "entropy": entropy,
+                        "cohesion": cohesion,
+                        "polarization": polarization,
+                        "lifecycle_stage": new_stage,
+                        "haiku_label": narrative.get("name"),
+                        "sentiment_mean": sentiment_mean,
+                        "sentiment_variance": sentiment_variance,
+                        "source_count": source_count,
+                        "weighted_source_score": weighted_src_score,
+                        "created_at": now_iso,
+                    })
+                except Exception as exc:
+                    logger.debug("Snapshot write skipped for %s: %s", narrative_id, exc)
 
             logger.info(
                 "Step 10: signals computed for %d active narratives; assigned_docs=%d recovered_docs=%d",
@@ -1425,6 +1468,7 @@ def run() -> None:
             graph = build_narrative_graph(
                 active_narratives,
                 vector_store,
+                similarity_threshold=settings.CENTRALITY_SIMILARITY_THRESHOLD,
                 unrecoverable_missing_ids=unrecoverable_missing_ids,
             )
             centrality_scores = compute_centrality(
@@ -1432,7 +1476,10 @@ def run() -> None:
                 exact_max_nodes=settings.CENTRALITY_EXACT_MAX_NODES,
                 approx_k=settings.CENTRALITY_APPROX_K,
             )
-            catalyst_ids = set(flag_catalysts(centrality_scores))
+            catalyst_ids = set(flag_catalysts(
+                centrality_scores,
+                top_fraction=settings.CENTRALITY_CATALYST_TOP_FRACTION,
+            ))
 
             for n in active_narratives:
                 nid = n["narrative_id"]
@@ -1560,6 +1607,82 @@ def run() -> None:
         # Non-fatal: continue
 
     # ------------------------------------------------------------------ #
+    # Step 11.7: Catalyst Anchoring (before Step 12 so catalyst fields   #
+    # are available when ns_score is computed).                           #
+    #                                                                     #
+    # NOTE: signal direction/sectors are read from the DB here, which    #
+    # reflects the previous cycle for stable narratives and is absent for #
+    # new narratives (signal upsert happens in Step 14, after ns_score). #
+    # New narratives have no linked_assets yet so the catalyst loop       #
+    # skips them; established narratives have stable signal, so 1-cycle  #
+    # lag is acceptable. A full fix requires moving Step 14 before Steps  #
+    # 11.7 and 12, which in turn requires decoupling the ns_score         #
+    # threshold from the relabeling trigger.                             #
+    # ------------------------------------------------------------------ #
+    step_start = time.monotonic()
+    try:
+        from catalyst_service import compute_catalyst_proximity
+
+        active_for_catalyst = repository.get_all_active_narratives()
+        catalyst_count = 0
+
+        for narrative in active_for_catalyst:
+            narrative_id = narrative["narrative_id"]
+            linked_raw = narrative.get("linked_assets")
+            if not linked_raw:
+                continue
+
+            try:
+                assets = json.loads(linked_raw) if isinstance(linked_raw, str) else linked_raw
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not assets:
+                continue
+
+            signal = repository.get_narrative_signal(narrative_id)
+            direction = signal.get("direction", "neutral") if signal else "neutral"
+            try:
+                sectors = json.loads(signal.get("affected_sectors", "[]")) if signal else []
+            except (json.JSONDecodeError, TypeError):
+                sectors = []
+
+            best_proximity = 0.0
+            best_result = None
+
+            for asset in assets:
+                ticker = asset.get("ticker", "")
+                if not ticker or ticker.startswith("TOPIC:"):
+                    continue
+                try:
+                    result = compute_catalyst_proximity(ticker, direction, sectors)
+                    if result["proximity_score"] > best_proximity:
+                        best_proximity = result["proximity_score"]
+                        best_result = result
+                except Exception as exc:
+                    logger.debug("Catalyst proximity failed for %s/%s: %s", narrative_id, ticker, exc)
+                    continue
+
+            if best_result:
+                repository.update_narrative(narrative_id, {
+                    "catalyst_proximity_score": best_result["proximity_score"],
+                    "days_to_catalyst": best_result["days_to_earnings"] if best_result["catalyst_type"] == "earnings" else best_result["days_to_fomc"],
+                    "catalyst_type": best_result["catalyst_type"],
+                    "macro_alignment": best_result["macro_alignment"],
+                })
+                catalyst_count += 1
+
+        logger.info("Step 11.7: catalyst anchoring computed for %d narratives", catalyst_count)
+        step_duration = (time.monotonic() - step_start) * 1000
+        _log_step(repository, cycle_id, 117, "catalyst_anchoring", "OK", step_duration,
+                  f"anchored={catalyst_count}")
+
+    except Exception as exc:
+        step_duration = (time.monotonic() - step_start) * 1000
+        logger.error("Step 11.7 (catalyst anchoring) failed: %s", exc, exc_info=True)
+        _log_step(repository, cycle_id, 117, "catalyst_anchoring", "ERROR", step_duration, str(exc))
+        # Non-fatal: continue
+
+    # ------------------------------------------------------------------ #
     # Step 12: Compute Ns Score (with learned weights)                    #
     # ------------------------------------------------------------------ #
     step_start = time.monotonic()
@@ -1664,13 +1787,25 @@ def run() -> None:
                 })
                 penalized_this_cycle.add(narrative_id)
 
-        # Apply persistent −0.25 penalty to narratives carrying is_coordinated=1
-        # from prior cycles so the flag has ongoing scoring consequence.
+        # Re-apply penalty only to narratives that had a coordination event in
+        # the last 7 days.  Once 7 days pass with no new event the flag no longer
+        # suppresses scoring, preventing a transient burst from becoming a
+        # permanent scoring penalty.  Also clears is_coordinated when stale.
         for _n in active_narratives:
             if not _n.get("is_coordinated"):
                 continue
             _nid = _n["narrative_id"]
             if _nid in penalized_this_cycle:
+                continue
+            try:
+                recent_flags = repository.get_coordination_flags_rolling_window(
+                    _nid, days=7
+                )
+            except Exception:
+                recent_flags = 0
+            if recent_flags == 0:
+                # No events in 7 days — lift the flag; penalty stops accruing.
+                repository.update_narrative(_nid, {"is_coordinated": 0})
                 continue
             _fresh = repository.get_narrative(_nid)
             if _fresh is None:
@@ -2219,72 +2354,9 @@ def run() -> None:
         _log_step(repository, cycle_id, 19, "emit_output", "ERROR", step_duration, str(exc))
         # Non-fatal: continue
 
-    # ------------------------------------------------------------------ #
-    # Step 19.1: Catalyst Anchoring (Phase 4)                            #
-    # ------------------------------------------------------------------ #
-    step_start = time.monotonic()
-    try:
-        from catalyst_service import compute_catalyst_proximity
-
-        active_for_catalyst = repository.get_all_active_narratives()
-        catalyst_count = 0
-
-        for narrative in active_for_catalyst:
-            narrative_id = narrative["narrative_id"]
-            linked_raw = narrative.get("linked_assets")
-            if not linked_raw:
-                continue
-
-            try:
-                assets = json.loads(linked_raw) if isinstance(linked_raw, str) else linked_raw
-            except (json.JSONDecodeError, TypeError):
-                continue
-            if not assets:
-                continue
-
-            # Get direction and sectors from narrative_signals (Phase 1)
-            signal = repository.get_narrative_signal(narrative_id)
-            direction = signal.get("direction", "neutral") if signal else "neutral"
-            try:
-                sectors = json.loads(signal.get("affected_sectors", "[]")) if signal else []
-            except (json.JSONDecodeError, TypeError):
-                sectors = []
-
-            best_proximity = 0.0
-            best_result = None
-
-            for asset in assets:
-                ticker = asset.get("ticker", "")
-                if not ticker or ticker.startswith("TOPIC:"):
-                    continue
-                try:
-                    result = compute_catalyst_proximity(ticker, direction, sectors)
-                    if result["proximity_score"] > best_proximity:
-                        best_proximity = result["proximity_score"]
-                        best_result = result
-                except Exception as exc:
-                    logger.debug("Catalyst proximity failed for %s/%s: %s", narrative_id, ticker, exc)
-                    continue
-
-            if best_result:
-                repository.update_narrative(narrative_id, {
-                    "catalyst_proximity_score": best_result["proximity_score"],
-                    "days_to_catalyst": best_result["days_to_earnings"] if best_result["catalyst_type"] == "earnings" else best_result["days_to_fomc"],
-                    "catalyst_type": best_result["catalyst_type"],
-                    "macro_alignment": best_result["macro_alignment"],
-                })
-                catalyst_count += 1
-
-        logger.info("Step 19.1: catalyst anchoring computed for %d narratives", catalyst_count)
-        step_duration = (time.monotonic() - step_start) * 1000
-        _log_step(repository, cycle_id, 191, "catalyst_anchoring", "OK", step_duration,
-                  f"anchored={catalyst_count}")
-
-    except Exception as exc:
-        step_duration = (time.monotonic() - step_start) * 1000
-        logger.error("Step 19.1 (catalyst anchoring) failed: %s", exc, exc_info=True)
-        _log_step(repository, cycle_id, 191, "catalyst_anchoring", "ERROR", step_duration, str(exc))
-        # Non-fatal: continue
+    # Step 19.1 (catalyst anchoring) was moved to Step 11.7 so that
+    # catalyst_proximity_score and macro_alignment are available to Step 12 (ns_score)
+    # and Step 19 (emit_output) within the same pipeline cycle.
 
     # ------------------------------------------------------------------ #
     # Step 19.5: Snapshot and Detect Mutations                           #
@@ -2343,6 +2415,16 @@ def run() -> None:
     step_start = time.monotonic()
     try:
         committed_at = datetime.now(timezone.utc).isoformat()
+        # Write the filesystem output first so the file exists before the cycle is
+        # marked committed in the DB.  A crash between the file write and the DB
+        # commit leaves the cycle un-committed (safe re-run); a crash after
+        # mark_pipeline_cycle_committed with a missing file is the worse failure.
+        write_outputs(
+            output_objects,
+            today,
+            pipeline_cycle_id=cycle_id,
+            committed_at=committed_at,
+        )
         repository.publish_swing_cycle_snapshot(
             cycle_id,
             committed_at,
@@ -2350,12 +2432,6 @@ def run() -> None:
         )
         repository.mark_pipeline_cycle_committed(cycle_id, committed_at)
         repository.mark_prior_cycles_recovered(cycle_id)
-        write_outputs(
-            output_objects,
-            today,
-            pipeline_cycle_id=cycle_id,
-            committed_at=committed_at,
-        )
         logger.info(
             "Step 19.75: committed cycle %s with %d outputs and %d convergence rows",
             cycle_id,
