@@ -1,5 +1,6 @@
+import os
 from pathlib import Path
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -7,7 +8,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     # --- LLM ---
-    ANTHROPIC_API_KEY: str
+    ANTHROPIC_API_KEY: str = ""
     ANTHROPIC_TIMEOUT_SECONDS: int = 60
     HAIKU_MODEL: str = "claude-haiku-4-5-20251001"
     SONNET_MODEL: str = "claude-sonnet-4-6"
@@ -30,11 +31,19 @@ class Settings(BaseSettings):
     ENTROPY_MIN_VOCAB_SIZE: int = 3
     HDBSCAN_MIN_CLUSTER_SIZE: int = 8
     HDBSCAN_MIN_SAMPLES: int = 5
-    CLUSTER_MAX_PENDING_BATCH: int = 120
+    CLUSTER_MAX_PENDING_BATCH: int = 400
+    CLUSTER_SPARSE_RETRY_LIMIT: int = 3
     PERIODIC_DEDUP_MAX_PAIRS: int = 20000
 
     # --- Asset mapping ---
-    ASSET_MAPPING_MIN_SIMILARITY: float = 0.60
+    ASSET_MAPPING_MIN_SIMILARITY: float = 0.70
+    ASSET_MAPPING_ENTITY_MIN_SIMILARITY: float = 0.80
+    ASSET_MAPPING_REQUIRE_EVIDENCE: bool = True
+    # Embedding matches at/above this cosine similarity are trusted on semantic
+    # strength alone — no literal-mention evidence required, even when
+    # REQUIRE_EVIDENCE is set. Keeps the evidence gate for the weaker
+    # (ENTITY_MIN..TRUST) band where false positives are likelier.
+    ASSET_MAPPING_TRUST_SIMILARITY: float = 0.80
 
     # --- LSH deduplication ---
     LSH_THRESHOLD: float = 0.85
@@ -170,21 +179,6 @@ class Settings(BaseSettings):
     ]
 
     # --- Validators ---
-
-    @field_validator("ANTHROPIC_API_KEY")
-    @classmethod
-    def api_key_must_not_be_empty(cls, v: str, info) -> str:
-        # Allow placeholder in non-production environments to avoid blocking tests
-        env = info.data.get("ENVIRONMENT", "development")
-        if not v or not v.strip():
-            if env.lower() in ("test", "development"):
-                return "placeholder-key-for-non-prod"
-            raise ValueError(
-                "ANTHROPIC_API_KEY must not be empty — system cannot start. "
-                "Set it in your .env file."
-            )
-        return v
-
     @field_validator(
         "CENTROID_ALPHA",
         "ASSIGNMENT_SIMILARITY_FLOOR",
@@ -215,7 +209,7 @@ class Settings(BaseSettings):
             raise ValueError(f"{info.field_name} must be >= 2, got {v}")
         return v
 
-    @field_validator("CLUSTER_MAX_PENDING_BATCH", "PERIODIC_DEDUP_MAX_PAIRS")
+    @field_validator("CLUSTER_MAX_PENDING_BATCH", "CLUSTER_SPARSE_RETRY_LIMIT", "PERIODIC_DEDUP_MAX_PAIRS")
     @classmethod
     def clustering_caps_must_be_positive(cls, v: int, info) -> int:
         if v <= 0:
@@ -256,6 +250,22 @@ class Settings(BaseSettings):
             raise ValueError("JWT_SECRET_KEY must be at least 32 non-whitespace characters in JWT mode")
         return v
 
+    @model_validator(mode="after")
+    def validate_runtime_requirements(self):
+        env = (self.ENVIRONMENT or "development").strip().lower()
+        api_key = (self.ANTHROPIC_API_KEY or "").strip()
+        if env == "test":
+            if not api_key:
+                self.ANTHROPIC_API_KEY = "placeholder-key-for-test"
+            return self
+        if not api_key:
+            raise ValueError(
+                "ANTHROPIC_API_KEY must not be empty — system cannot start. "
+                "Set it in your .env file."
+            )
+        self.ANTHROPIC_API_KEY = api_key
+        return self
+
 
 def ensure_data_dirs(s: Settings) -> None:
     """Create parent directories for all configured file paths if they don't exist."""
@@ -285,13 +295,22 @@ def get_settings() -> Settings:
 
 
 def get_api_settings() -> Settings:
-    """Best-effort settings for API import paths that run without Anthropic keys."""
+    """Settings loader for API paths.
+
+    Outside tests, missing required settings must still fail fast.
+    """
     try:
         return get_settings()
     except Exception:
-        fallback = Settings(ANTHROPIC_API_KEY="api-local-placeholder")
-        ensure_data_dirs(fallback)
-        return fallback
+        env = (os.environ.get("ENVIRONMENT") or "").strip().lower()
+        if env == "test" or "PYTEST_CURRENT_TEST" in os.environ:
+            fallback = Settings(
+                ENVIRONMENT="test",
+                ANTHROPIC_API_KEY=os.environ.get("ANTHROPIC_API_KEY", "placeholder-key-for-test"),
+            )
+            ensure_data_dirs(fallback)
+            return fallback
+        raise
 
 
 def __getattr__(name: str):

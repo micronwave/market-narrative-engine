@@ -6,6 +6,7 @@ all source URLs for audit purposes.
 
 import json
 import logging
+import re
 import sqlite3
 import time
 import uuid
@@ -26,7 +27,6 @@ from output import build_output_object, validate_output, write_outputs
 from repository import SqliteRepository
 from settings import settings
 from signals import (
-    _accept_fallback_ticker,
     compute_cohesion,
     compute_cross_source_score,
     compute_entropy,
@@ -120,6 +120,180 @@ def check_financial_relevance(
             logger.warning("check_financial_relevance: could not parse topic_tags JSON, treating as empty")
 
     return has_financial and has_investable_tag
+
+
+def _is_etf(asset_name: str) -> bool:
+    """ETFs are exempt from the evidence gate — their embedding captures a sector, not a company."""
+    name_lower = (asset_name or "").lower()
+    return any(kw in name_lower for kw in ("etf", " fund", " trust", "ishares", "spdr", "vanguard", "proshares"))
+
+
+# Generic corporate-name tokens that carry no identifying signal on their own.
+# Matching these would link any narrative mentioning e.g. "group" to a ticker.
+_NAME_STOPWORDS = frozenset({
+    "inc", "corp", "corporation", "co", "company", "companies", "holdings",
+    "holding", "ltd", "limited", "group", "plc", "the", "and", "sa", "ag",
+    "nv", "se", "spa", "llc", "lp", "trust", "fund", "technologies",
+    "technology", "international", "global", "industries", "systems",
+    "solutions", "enterprises", "partners", "capital", "financial",
+})
+
+
+def _name_in_evidence(asset_name: str, blob_lower: str) -> bool:
+    """True when a distinctive token of the company name appears in the evidence.
+
+    Financial prose names the company ("CrowdStrike", "Nvidia"), not the bare
+    ticker, so symbol-only matching drops legitimate links. We match on the
+    significant name tokens (>=4 chars, excluding generic corporate stopwords)
+    to recover them while avoiding generic-word collisions.
+    """
+    if not asset_name:
+        return False
+    tokens = re.findall(r"[A-Za-z]{4,}", asset_name)
+    significant = [t.lower() for t in tokens if t.lower() not in _NAME_STOPWORDS]
+    for tok in significant:
+        if re.search(rf"\b{re.escape(tok)}\b", blob_lower):
+            return True
+    return False
+
+
+def _ticker_has_evidence(ticker: str, asset_name: str, excerpts: list[str]) -> bool:
+    """Return True when excerpts contain recognisable evidence for this specific ticker.
+
+    Strong evidence: $TICKER or (TICKER) in any excerpt.
+    Name evidence:   a distinctive token of the company name appears in the text
+                     (this is how news actually references companies).
+    Weak evidence:   ticker in >=2 excerpts AND first meaningful word of the company
+                     name also appears in the combined text (prevents acronym collisions).
+    """
+    blob = " ".join(excerpts)
+    escaped = re.escape(ticker)
+
+    if re.search(rf"\${escaped}\b", blob):
+        return True
+    if re.search(rf"\(\s*{escaped}\s*\)", blob):
+        return True
+
+    if _name_in_evidence(asset_name, blob.lower()):
+        return True
+
+    plain_hits = sum(1 for ex in excerpts if re.search(rf"\b{escaped}\b", ex))
+    if plain_hits >= 2:
+        first_token = (asset_name or "").split()[0] if (asset_name or "") else ""
+        m = re.match(r"[A-Za-z]+", first_token)
+        first_word = m.group(0).lower() if m else ""
+        return len(first_word) > 3 and first_word in blob.lower()
+
+    return False
+
+
+def _map_narrative_assets(repository, asset_mapper, vector_store, narrative: dict) -> list[dict]:
+    """Compute and persist fresh linked_assets for one narrative.
+
+    Evidence gate (Fix 6): non-ETF equities must have textual evidence in the
+    narrative's own excerpts OR exceed ASSET_MAPPING_ENTITY_MIN_SIMILARITY.
+    """
+    narrative_id = narrative["narrative_id"]
+    evidence = repository.get_document_evidence(
+        narrative_id, limit=settings.SIGNAL_EVIDENCE_LIMIT
+    )
+
+    # Build excerpts early — needed for both embedding gate and text-fallback.
+    evidence_excerpts: list[str] = [(e.get("excerpt") or "")[:200] for e in evidence[:10]]
+
+    centroid_vec = vector_store.get_vector(narrative_id)
+    topic_tags_raw = narrative.get("topic_tags")
+    try:
+        narrative_topic_tags = json.loads(topic_tags_raw) if topic_tags_raw else []
+    except (json.JSONDecodeError, TypeError):
+        narrative_topic_tags = []
+
+    raw_assets = asset_mapper.map_narrative(
+        centroid_vec,
+        min_similarity=settings.ASSET_MAPPING_MIN_SIMILARITY,
+        topic_tags=narrative_topic_tags,
+        sector_map=SECTOR_MAP,
+    ) if centroid_vec is not None else []
+
+    # Apply evidence gate + entity min-similarity for non-ETF equities.
+    linked_assets: list[dict] = []
+    for asset in raw_assets:
+        asset_type = asset.get("asset_type") or ("etf" if _is_etf(asset["asset_name"]) else "equity")
+        asset["asset_type"] = asset_type
+        if asset_type == "etf":
+            linked_assets.append(asset)
+            continue
+        sim = float(asset["similarity_score"])
+        # High-confidence embedding match: trust on semantic strength alone.
+        # News often discusses a company without ever naming the ticker or the
+        # exact corporate name; demanding literal evidence there silently drops
+        # legitimate links. The gate is kept for weaker matches below.
+        if sim >= settings.ASSET_MAPPING_TRUST_SIMILARITY:
+            linked_assets.append(asset)
+            continue
+        needs_evidence = (
+            settings.ASSET_MAPPING_REQUIRE_EVIDENCE
+            or sim < settings.ASSET_MAPPING_ENTITY_MIN_SIMILARITY
+        )
+        if needs_evidence and not _ticker_has_evidence(
+            asset["ticker"], asset["asset_name"], evidence_excerpts
+        ):
+            logger.info(
+                "Narrative %s: dropped %s (sim=%.3f, failed evidence gate)",
+                narrative_id, asset["ticker"], sim,
+            )
+            continue
+        linked_assets.append(asset)
+
+    if not linked_assets and evidence:
+        evidence_text = " ".join(evidence_excerpts)
+        fallback_tickers = [
+            t for t in extract_known_tickers(evidence_text)
+            if _ticker_has_evidence(t, asset_mapper.get_name(t) or t, evidence_excerpts)
+        ]
+        if fallback_tickers:
+            linked_assets = [
+                {
+                    "ticker": t,
+                    "asset_name": asset_mapper.get_name(t) or t,
+                    "asset_type": "equity",
+                    "similarity_score": 0.0,
+                    "source": "text_mention",
+                    "match_source": "text_mention",
+                    "confidence_type": "mention",
+                }
+                for t in fallback_tickers
+            ]
+            logger.info(
+                "Narrative %s: text-based ticker fallback found: %s",
+                narrative_id, fallback_tickers,
+            )
+
+    # Non-destructive persistence: an empty recompute must not wipe a
+    # previously good mapping. Asset evidence is sparse cycle-to-cycle (a
+    # narrative's freshest excerpts may omit the company this round), so
+    # overwriting with [] erodes linkage across cycles. Keep last-good instead.
+    if linked_assets:
+        repository.update_narrative(narrative_id, {
+            "linked_assets": json.dumps(linked_assets),
+        })
+        return linked_assets
+
+    existing_raw = narrative.get("linked_assets")
+    try:
+        existing = json.loads(existing_raw) if existing_raw else []
+    except (json.JSONDecodeError, TypeError):
+        existing = []
+    if existing:
+        logger.info(
+            "Narrative %s: empty recompute; preserving %d existing linked asset(s)",
+            narrative_id, len(existing),
+        )
+        return existing
+
+    # Nothing now and nothing before — write [] to keep the column well-formed.
+    repository.update_narrative(narrative_id, {"linked_assets": json.dumps([])})
+    return []
 
 
 def _flag_post_label_review(
@@ -374,6 +548,8 @@ def run() -> None:
     mutation_analyses: dict[str, str] = {}              # narrative_id -> Sonnet output
     emb_dim: int = 0
     cycle_id: str = str(uuid.uuid4())                   # unique ID for this pipeline invocation
+    published_convergences: dict[str, dict] = {}
+    output_objects: list[dict] = []
 
     # ------------------------------------------------------------------ #
     # Step 0: First-Run Initialization and Consistency Check              #
@@ -383,6 +559,7 @@ def run() -> None:
     try:
         repository = SqliteRepository(settings.DB_PATH)
         repository.migrate()
+        repository.begin_pipeline_cycle(cycle_id, today, now_iso)
 
         # Asset library must exist before any pipeline run
         if not Path(settings.ASSET_LIBRARY_PATH).exists():
@@ -748,7 +925,12 @@ def run() -> None:
                                 narrative_id, cycle_slot, new_vec.tobytes()
                             )
 
-                        repository.record_narrative_assignment(narrative_id, today)
+                        repository.record_narrative_assignment(
+                            narrative_id,
+                            today,
+                            doc.doc_id,
+                            cycle_id,
+                        )
                         repository.update_narrative(narrative_id, {
                             "last_assignment_date": today,
                             "last_updated_at": now_iso,
@@ -763,6 +945,7 @@ def run() -> None:
                             "published_at": doc.published_at,
                             "author": doc.author,
                             "excerpt": doc.raw_text[:500],
+                            "pipeline_cycle_id": cycle_id,
                         })
 
                         narrative_assigned_docs.setdefault(narrative_id, []).append(doc.doc_id)
@@ -993,10 +1176,16 @@ def run() -> None:
     # ------------------------------------------------------------------ #
     step_start = time.monotonic()
     try:
-        if not new_narrative_ids:
-            logger.info("Step 10: no new narratives this cycle — skipping stale signal recompute")
+        assigned_this_cycle = repository.count_documents_assigned_in_cycle(cycle_id)
+        recovered_assignment_map = repository.get_pending_assignment_doc_ids_by_narrative(exclude_cycle_id=cycle_id)
+        recovered_assignment_count = sum(len(doc_ids) for doc_ids in recovered_assignment_map.values())
+        if not new_narrative_ids and assigned_this_cycle == 0 and recovered_assignment_count == 0:
+            logger.info("Step 10: no new narratives or assignments this cycle — skipping signal recompute")
             step_duration = (time.monotonic() - step_start) * 1000
-            _log_step(repository, cycle_id, 10, "compute_signals", "OK", step_duration, "skipped:no_new_narratives")
+            _log_step(
+                repository, cycle_id, 10, "compute_signals", "SKIPPED",
+                step_duration, "skipped:no_new_narratives_no_assignments",
+            )
         else:
             active_narratives = repository.get_all_active_narratives()
 
@@ -1042,9 +1231,12 @@ def run() -> None:
                 escalation = compute_source_escalation(evidence)
                 weighted_src_score = compute_weighted_source_score(evidence, corpus_domain_count)
 
-                # Cohesion/polarization from new embeddings this cycle (if any)
-                new_doc_ids = narrative_assigned_docs.get(narrative_id, [])
-                new_embeddings = [doc_embeddings[did] for did in new_doc_ids
+                # Cohesion/polarization from current-cycle docs plus any recovered
+                # uncommitted docs from a prior interrupted run.
+                recovered_doc_ids = recovered_assignment_map.get(narrative_id, [])
+                current_doc_ids = narrative_assigned_docs.get(narrative_id, [])
+                new_doc_ids = list(dict.fromkeys(current_doc_ids + recovered_doc_ids))
+                new_embeddings = [doc_embeddings[did] for did in current_doc_ids
                                   if did in doc_embeddings]
 
                 ema_alpha = settings.COHESION_EMA_ALPHA
@@ -1084,9 +1276,10 @@ def run() -> None:
                     cohesion = min(1.0, max(0.0, float(narrative.get("cohesion") or 0.0)))
                     polarization = float(narrative.get("polarization") or 0.0)
 
-                # document_count: existing count + new assignments this cycle
+                # document_count is repaired from authoritative evidence so a Step 7 crash
+                # cannot leave stale totals behind on restart.
                 new_assignment_count = len(new_doc_ids)
-                doc_count = _safe_rounded_int(narrative.get("document_count"), default=0) + new_assignment_count
+                doc_count = repository.count_document_evidence(narrative_id)
 
                 # Baseline doc rate (shared by inflow velocity + burst velocity)
                 freq = max(settings.PIPELINE_FREQUENCY_HOURS, 1)
@@ -1191,10 +1384,13 @@ def run() -> None:
                 except Exception as exc:
                     logger.debug("Public interest skipped for %s: %s", narrative_id, exc)
 
-            logger.info("Step 10: signals computed for %d active narratives", len(active_narratives))
+            logger.info(
+                "Step 10: signals computed for %d active narratives; assigned_docs=%d recovered_docs=%d",
+                len(active_narratives), assigned_this_cycle, recovered_assignment_count,
+            )
             step_duration = (time.monotonic() - step_start) * 1000
             _log_step(repository, cycle_id, 10, "compute_signals", "OK", step_duration,
-                      f"narratives={len(active_narratives)} evidence_limit={settings.SIGNAL_EVIDENCE_LIMIT}")
+                      f"narratives={len(active_narratives)} assigned_docs={assigned_this_cycle} recovered_docs={recovered_assignment_count} evidence_limit={settings.SIGNAL_EVIDENCE_LIMIT}")
 
     except Exception as exc:
         step_duration = (time.monotonic() - step_start) * 1000
@@ -1274,6 +1470,38 @@ def run() -> None:
         # Non-fatal: continue
 
     # ------------------------------------------------------------------ #
+    # Step 11.2: Asset Mapping                                            #
+    # ------------------------------------------------------------------ #
+    step_start = time.monotonic()
+    try:
+        active_narratives = repository.get_all_active_narratives()
+        non_suppressed = [n for n in active_narratives if not bool(n.get("suppressed", 0))]
+        mapped_count = 0
+        linked_count = 0
+
+        for narrative in non_suppressed:
+            linked_assets = _map_narrative_assets(
+                repository, asset_mapper, vector_store, narrative,
+            )
+            mapped_count += 1
+            if linked_assets:
+                linked_count += 1
+
+        logger.info(
+            "Step 11.2: asset mapping refreshed for %d narratives, linked=%d",
+            mapped_count, linked_count,
+        )
+        step_duration = (time.monotonic() - step_start) * 1000
+        _log_step(repository, cycle_id, 112, "asset_mapping", "OK", step_duration,
+                  f"narratives={mapped_count} linked={linked_count}")
+
+    except Exception as exc:
+        step_duration = (time.monotonic() - step_start) * 1000
+        logger.error("Step 11.2 (asset mapping) failed: %s", exc, exc_info=True)
+        _log_step(repository, cycle_id, 112, "asset_mapping", "ERROR", step_duration, str(exc))
+        # Non-fatal: convergence will use last persisted assets if mapping fails.
+
+    # ------------------------------------------------------------------ #
     # Step 11.5: Narrative Convergence Detection                          #
     # ------------------------------------------------------------------ #
     step_start = time.monotonic()
@@ -1286,8 +1514,9 @@ def run() -> None:
 
         # Atomic replace: only clears existing rows after computation succeeds
         now_conv = datetime.now(timezone.utc).isoformat()
-        tagged = {t: {"computed_at": now_conv, **d} for t, d in convergences.items()}
+        tagged = {t: {"computed_at": now_conv, "pipeline_cycle_id": cycle_id, **d} for t, d in convergences.items()}
         repository.replace_ticker_convergences(tagged)
+        published_convergences = tagged
 
         # Propagate convergence_exposure to each narrative:
         # max(pressure_score) across all tickers the narrative is linked to.
@@ -1325,6 +1554,7 @@ def run() -> None:
     except Exception as exc:
         step_duration = (time.monotonic() - step_start) * 1000
         logger.error("Step 11.5 (convergence) failed: %s", exc, exc_info=True)
+        published_convergences = {}
         _log_step(repository, cycle_id, 115, "convergence_detection", "ERROR",
                   step_duration, str(exc))
         # Non-fatal: continue
@@ -1421,7 +1651,8 @@ def run() -> None:
             repository=repository,
         )
 
-        # Apply −0.25 Ns penalty to affected narratives
+        # Apply −0.25 Ns penalty to narratives flagged this cycle
+        penalized_this_cycle: set[str] = set()
         for event in adversarial_events:
             for narrative_id in event.affected_narrative_ids:
                 narrative = repository.get_narrative(narrative_id)
@@ -1431,6 +1662,23 @@ def run() -> None:
                 repository.update_narrative(narrative_id, {
                     "ns_score": max(0.0, current_ns - 0.25),
                 })
+                penalized_this_cycle.add(narrative_id)
+
+        # Apply persistent −0.25 penalty to narratives carrying is_coordinated=1
+        # from prior cycles so the flag has ongoing scoring consequence.
+        for _n in active_narratives:
+            if not _n.get("is_coordinated"):
+                continue
+            _nid = _n["narrative_id"]
+            if _nid in penalized_this_cycle:
+                continue
+            _fresh = repository.get_narrative(_nid)
+            if _fresh is None:
+                continue
+            _current_ns = float(_fresh.get("ns_score") or 0.0)
+            repository.update_narrative(_nid, {
+                "ns_score": max(0.0, _current_ns - 0.25),
+            })
 
         logger.info("Step 13: adversarial check — %d events", len(adversarial_events))
         step_duration = (time.monotonic() - step_start) * 1000
@@ -1539,14 +1787,24 @@ def run() -> None:
 
                         # Extract signal from combined response (non-fatal)
                         try:
-                            signal_data = parse_signal_json(raw_label)
-                            validated_signal = validate_signal_fields(signal_data)
-                            repository.upsert_narrative_signal({
-                                "narrative_id": narrative_id,
-                                **validated_signal,
-                                "extracted_at": now_iso,
-                                "raw_response": raw_label,
-                            })
+                            signal_data = parse_signal_json(raw_label, allow_hardcoded_fallback=False)
+                            if signal_data is None:
+                                repository.record_narrative_signal_failure(
+                                    narrative_id,
+                                    raw_label,
+                                    now_iso,
+                                    "parse_signal_json_failed",
+                                )
+                            else:
+                                validated_signal = validate_signal_fields(signal_data)
+                                repository.upsert_narrative_signal({
+                                    "narrative_id": narrative_id,
+                                    **validated_signal,
+                                    "extracted_at": now_iso,
+                                    "raw_response": raw_label,
+                                    "extraction_status": "ok",
+                                    "parse_error": None,
+                                })
                         except Exception as sig_exc:
                             logger.debug("Signal upsert failed for %s: %s", narrative_id, sig_exc)
                     else:
@@ -1617,14 +1875,24 @@ def run() -> None:
                             raw_signal = llm_client.call_haiku(
                                 "extract_signal", narrative_id, signal_prompt
                             )
-                            sig_data = parse_signal_json(raw_signal)
-                            validated = validate_signal_fields(sig_data)
-                            repository.upsert_narrative_signal({
-                                "narrative_id": narrative_id,
-                                **validated,
-                                "extracted_at": now_iso,
-                                "raw_response": raw_signal,
-                            })
+                            sig_data = parse_signal_json(raw_signal, allow_hardcoded_fallback=False)
+                            if sig_data is None:
+                                repository.record_narrative_signal_failure(
+                                    narrative_id,
+                                    raw_signal,
+                                    now_iso,
+                                    "parse_signal_json_failed",
+                                )
+                            else:
+                                validated = validate_signal_fields(sig_data)
+                                repository.upsert_narrative_signal({
+                                    "narrative_id": narrative_id,
+                                    **validated,
+                                    "extracted_at": now_iso,
+                                    "raw_response": raw_signal,
+                                    "extraction_status": "ok",
+                                    "parse_error": None,
+                                })
                             haiku_count += 1
                 except Exception as sig_exc:
                     logger.debug(
@@ -1849,7 +2117,7 @@ def run() -> None:
     try:
         active_narratives = repository.get_all_active_narratives()
         non_suppressed = [n for n in active_narratives if not bool(n.get("suppressed", 0))]
-        output_objects: list[dict] = []
+        output_objects = []
 
         for narrative in non_suppressed:
             narrative_id = narrative["narrative_id"]
@@ -1866,45 +2134,11 @@ def run() -> None:
                 for e in evidence[:20]
             ]
 
-            centroid_vec = vector_store.get_vector(narrative_id)
-            topic_tags_raw = narrative.get("topic_tags")
-            narrative_topic_tags = json.loads(topic_tags_raw) if topic_tags_raw else []
-            linked_assets = asset_mapper.map_narrative(
-                centroid_vec,
-                min_similarity=settings.ASSET_MAPPING_MIN_SIMILARITY,
-                topic_tags=narrative_topic_tags,
-                sector_map=SECTOR_MAP,
-            ) if centroid_vec is not None else []
-
-            # Fallback: when embedding similarity misses, scan evidence text for strong
-            # explicit ticker mentions. Accept $TICKER, (TICKER) with optional whitespace,
-            # or a plain uppercase ticker seen in at least two distinct excerpts.
-            if not linked_assets and evidence:
-                evidence_excerpts = [
-                    (e.get("excerpt") or "")[:200]
-                    for e in evidence[:10]
-                ]
-                evidence_text = " ".join(evidence_excerpts)
-                fallback_tickers = [
-                    t for t in extract_known_tickers(evidence_text)
-                    if _accept_fallback_ticker(evidence_excerpts, t)
-                ]
-                if fallback_tickers:
-                    linked_assets = [
-                        {
-                            "ticker": t,
-                            "asset_name": t,
-                            "similarity_score": 0.0,
-                            "source": "text_mention",
-                            "match_source": "text_mention",
-                            "confidence_type": "mention",
-                        }
-                        for t in fallback_tickers
-                    ]
-                    logger.info(
-                        "Narrative %s: text-based ticker fallback found: %s",
-                        narrative_id, fallback_tickers,
-                    )
+            linked_raw = narrative.get("linked_assets")
+            try:
+                linked_assets = json.loads(linked_raw) if linked_raw else []
+            except (json.JSONDecodeError, TypeError):
+                linked_assets = []
 
             # Phase 6: Enrich linked_assets with directional impact scores
             if linked_assets:
@@ -1927,6 +2161,7 @@ def run() -> None:
                                     "time_horizon": asset_impact.get("time_horizon", ""),
                                     "signal_components": asset_impact.get("signal_components", {}),
                                     "computed_at": computed_at,
+                                    "pipeline_cycle_id": cycle_id,
                                 })
                             except Exception as ie:
                                 logger.debug("Impact score persist failed for %s/%s: %s",
@@ -1973,11 +2208,10 @@ def run() -> None:
                     "Output validation failed for narrative %s — excluded", narrative_id
                 )
 
-        write_outputs(output_objects, today)
-        logger.info("Step 19: emitted %d narrative output objects", len(output_objects))
+        logger.info("Step 19: prepared %d narrative output objects", len(output_objects))
         step_duration = (time.monotonic() - step_start) * 1000
         _log_step(repository, cycle_id, 19, "emit_output", "OK", step_duration,
-                  f"emitted={len(output_objects)}")
+                  f"prepared={len(output_objects)}")
 
     except Exception as exc:
         step_duration = (time.monotonic() - step_start) * 1000
@@ -2086,8 +2320,73 @@ def run() -> None:
         # Non-fatal: continue to cleanup
 
     # ------------------------------------------------------------------ #
+    # Step 19.7: Check Notification Rules                                #
+    # ------------------------------------------------------------------ #
+    step_start = time.monotonic()
+    try:
+        from notifications import NotificationManager
+        notif_manager = NotificationManager(repository)
+        triggered = notif_manager.check_rules()
+        step_duration = (time.monotonic() - step_start) * 1000
+        logger.info("Step 19.7: checked notification rules, triggered=%d", len(triggered))
+        _log_step(repository, cycle_id, 197, "check_notifications", "OK", step_duration,
+                  f"triggered={len(triggered)}")
+    except Exception as exc:
+        step_duration = (time.monotonic() - step_start) * 1000
+        logger.warning("Step 19.7 (check_notifications) failed: %s", exc)
+        _log_step(repository, cycle_id, 197, "check_notifications", "ERROR", step_duration, str(exc))
+        # Non-fatal: continue to cleanup
+
+    # ------------------------------------------------------------------ #
+    # Step 19.75: Publish Committed Cycle Snapshot                        #
+    # ------------------------------------------------------------------ #
+    step_start = time.monotonic()
+    try:
+        committed_at = datetime.now(timezone.utc).isoformat()
+        repository.publish_swing_cycle_snapshot(
+            cycle_id,
+            committed_at,
+            convergences=published_convergences,
+        )
+        repository.mark_pipeline_cycle_committed(cycle_id, committed_at)
+        repository.mark_prior_cycles_recovered(cycle_id)
+        write_outputs(
+            output_objects,
+            today,
+            pipeline_cycle_id=cycle_id,
+            committed_at=committed_at,
+        )
+        logger.info(
+            "Step 19.75: committed cycle %s with %d outputs and %d convergence rows",
+            cycle_id,
+            len(output_objects),
+            len(published_convergences),
+        )
+        step_duration = (time.monotonic() - step_start) * 1000
+        _log_step(
+            repository,
+            cycle_id,
+            198,
+            "publish_committed_cycle",
+            "OK",
+            step_duration,
+            f"outputs={len(output_objects)} convergences={len(published_convergences)}",
+        )
+    except Exception as exc:
+        step_duration = (time.monotonic() - step_start) * 1000
+        logger.error("Step 19.75 (publish committed cycle) failed: %s", exc, exc_info=True)
+        _log_step(
+            repository,
+            cycle_id,
+            198,
+            "publish_committed_cycle",
+            "ERROR",
+            step_duration,
+            str(exc),
+        )
+
+    # ------------------------------------------------------------------ #
     # Step 19.8: Outbound posting retired (Phase 3 revamp)                #
-    # HOOK: add your own post-run dispatch here (webhook, email, etc.)   #
     # ------------------------------------------------------------------ #
     step_start = time.monotonic()
     step_duration = (time.monotonic() - step_start) * 1000

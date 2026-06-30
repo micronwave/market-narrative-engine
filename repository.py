@@ -1,8 +1,10 @@
 import datetime
+import hashlib
 import json
 import logging
 import re
 import sqlite3
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
 
@@ -69,8 +71,19 @@ class Repository(ABC):
         ...
 
     @abstractmethod
-    def record_narrative_assignment(self, narrative_id: str, date: str) -> None:
+    def record_narrative_assignment(
+        self,
+        narrative_id: str,
+        date: str,
+        doc_id: str | None = None,
+        pipeline_cycle_id: str | None = None,
+    ) -> None:
         """Record that a narrative received a document assignment on this date."""
+        ...
+
+    @abstractmethod
+    def count_documents_assigned_in_cycle(self, assigned_at: str) -> int:
+        """Count narrative assignment rows recorded for a pipeline cycle."""
         ...
 
     # --- Candidate Buffer Operations ---
@@ -227,6 +240,41 @@ class Repository(ABC):
         """Log a pipeline step execution."""
         ...
 
+    @abstractmethod
+    def begin_pipeline_cycle(self, cycle_id: str, cycle_date: str, started_at: str) -> None:
+        """Record the start of a pipeline cycle."""
+        ...
+
+    @abstractmethod
+    def mark_pipeline_cycle_committed(self, cycle_id: str, committed_at: str) -> None:
+        """Mark a pipeline cycle as committed for downstream readers."""
+        ...
+
+    @abstractmethod
+    def mark_prior_cycles_recovered(self, current_cycle_id: str) -> None:
+        """Mark older unfinished cycles as recovered by the current committed cycle."""
+        ...
+
+    @abstractmethod
+    def get_latest_committed_cycle_id(self) -> str | None:
+        """Return the latest committed cycle_id, if one exists."""
+        ...
+
+    @abstractmethod
+    def get_pending_assignment_doc_ids_by_narrative(self, exclude_cycle_id: str | None = None) -> dict[str, list[str]]:
+        """Return uncommitted assignment doc_ids keyed by narrative_id."""
+        ...
+
+    @abstractmethod
+    def publish_swing_cycle_snapshot(
+        self,
+        cycle_id: str,
+        published_at: str,
+        convergences: dict[str, dict] | None = None,
+    ) -> None:
+        """Publish a committed read snapshot for swing_signal consumers."""
+        ...
+
     # --- Quick Refresh Operations ---
 
     @abstractmethod
@@ -308,6 +356,17 @@ class Repository(ABC):
     @abstractmethod
     def get_document_evidence_by_ids(self, doc_ids: list[str]) -> list[dict]:
         """Get evidence documents by a list of doc_ids."""
+        ...
+
+    @abstractmethod
+    def record_narrative_signal_failure(
+        self,
+        narrative_id: str,
+        raw_response: str,
+        extracted_at: str,
+        parse_error: str,
+    ) -> None:
+        """Persist an explicit signal extraction failure state."""
         ...
 
     # --- Stock Cache Operations ---
@@ -830,7 +889,9 @@ class SqliteRepository(Repository):
                     ingested_at TEXT,
                     status TEXT DEFAULT 'pending',
                     raw_text TEXT,
-                    author TEXT
+                    author TEXT,
+                    cluster_attempt_count INTEGER DEFAULT 0,
+                    last_cluster_attempt_at TEXT
                 )
             """)
             conn.execute("""
@@ -905,11 +966,22 @@ class SqliteRepository(Repository):
                 "ON pipeline_run_log(run_id, step_number)"
             )
             conn.execute("""
+                CREATE TABLE IF NOT EXISTS pipeline_cycles (
+                    cycle_id TEXT PRIMARY KEY,
+                    cycle_date TEXT NOT NULL,
+                    started_at TEXT NOT NULL,
+                    committed_at TEXT,
+                    status TEXT NOT NULL DEFAULT 'running',
+                    recovered_by_cycle_id TEXT DEFAULT NULL
+                )
+            """)
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS narrative_assignments (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     narrative_id TEXT,
                     doc_id TEXT,
-                    assigned_at TEXT
+                    assigned_at TEXT,
+                    pipeline_cycle_id TEXT DEFAULT NULL
                 )
             """)
             conn.execute("""
@@ -918,9 +990,12 @@ class SqliteRepository(Repository):
                     narrative_id TEXT,
                     source_url TEXT,
                     source_domain TEXT,
+                    canonical_source_url TEXT,
+                    evidence_fingerprint TEXT,
                     published_at TEXT,
                     author TEXT,
-                    excerpt TEXT
+                    excerpt TEXT,
+                    pipeline_cycle_id TEXT DEFAULT NULL
                 )
             """)
             conn.execute("""
@@ -939,7 +1014,8 @@ class SqliteRepository(Repository):
                     haiku_description TEXT,
                     sonnet_analysis TEXT,
                     created_at TEXT,
-                    UNIQUE(narrative_id, snapshot_date)
+                    pipeline_cycle_id TEXT DEFAULT NULL,
+                    UNIQUE(narrative_id, snapshot_date, pipeline_cycle_id)
                 )
             """)
             conn.execute("""
@@ -1136,6 +1212,8 @@ class SqliteRepository(Repository):
                 "CREATE INDEX IF NOT EXISTS idx_narratives_ns_score ON narratives(ns_score)",
                 "CREATE INDEX IF NOT EXISTS idx_narratives_stage ON narratives(stage)",
                 "CREATE INDEX IF NOT EXISTS idx_doc_evidence_narrative ON document_evidence(narrative_id, published_at DESC)",
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_doc_evidence_narrative_url ON document_evidence(narrative_id, canonical_source_url) WHERE canonical_source_url IS NOT NULL AND canonical_source_url != ''",
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_doc_evidence_narrative_fingerprint ON document_evidence(narrative_id, evidence_fingerprint) WHERE evidence_fingerprint IS NOT NULL AND evidence_fingerprint != ''",
                 "CREATE INDEX IF NOT EXISTS idx_mutations_narrative ON mutation_events(narrative_id, detected_at DESC)",
                 "CREATE INDEX IF NOT EXISTS idx_adversarial_narrative ON adversarial_log(narrative_id)",
                 "CREATE INDEX IF NOT EXISTS idx_snapshots_narrative ON narrative_snapshots(narrative_id, snapshot_date DESC)",
@@ -1162,6 +1240,114 @@ class SqliteRepository(Repository):
                 conn.execute("ALTER TABLE document_evidence ADD COLUMN source_type TEXT DEFAULT 'news'")
             except Exception:
                 pass
+
+            for col, coltype in [
+                ("canonical_source_url", "TEXT"),
+                ("evidence_fingerprint", "TEXT"),
+            ]:
+                try:
+                    conn.execute(f"ALTER TABLE document_evidence ADD COLUMN {col} {coltype}")
+                except Exception:
+                    pass
+
+            for col, coltype in [
+                ("cluster_attempt_count", "INTEGER DEFAULT 0"),
+                ("last_cluster_attempt_at", "TEXT DEFAULT NULL"),
+            ]:
+                try:
+                    conn.execute(f"ALTER TABLE candidate_buffer ADD COLUMN {col} {coltype}")
+                except Exception:
+                    pass
+
+            for col, coltype in [
+                ("pipeline_cycle_id", "TEXT DEFAULT NULL"),
+            ]:
+                for table_name in ("narrative_assignments", "document_evidence", "impact_scores", "ticker_convergence"):
+                    try:
+                        conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {col} {coltype}")
+                    except Exception:
+                        pass
+
+            for col, coltype in [
+                ("extraction_status", "TEXT NOT NULL DEFAULT 'ok'"),
+                ("parse_error", "TEXT DEFAULT NULL"),
+            ]:
+                try:
+                    conn.execute(f"ALTER TABLE narrative_signals ADD COLUMN {col} {coltype}")
+                except Exception:
+                    pass
+
+            snapshot_sql_row = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='narrative_snapshots'"
+            ).fetchone()
+            snapshot_sql = snapshot_sql_row[0] if snapshot_sql_row else ""
+            if snapshot_sql and "UNIQUE(narrative_id, snapshot_date, pipeline_cycle_id)" not in snapshot_sql:
+                # Idempotency guard: a prior interrupted run can leave the temp
+                # table behind, which would make the CREATE below fail and block
+                # every subsequent migrate(). Drop any orphan first.
+                conn.execute("DROP TABLE IF EXISTS narrative_snapshots_new")
+                conn.execute("""
+                    CREATE TABLE narrative_snapshots_new (
+                        id TEXT PRIMARY KEY,
+                        narrative_id TEXT NOT NULL,
+                        snapshot_date TEXT NOT NULL,
+                        ns_score REAL,
+                        velocity REAL,
+                        entropy REAL,
+                        cohesion REAL,
+                        polarization REAL,
+                        doc_count INTEGER,
+                        lifecycle_stage TEXT,
+                        haiku_label TEXT,
+                        haiku_description TEXT,
+                        sonnet_analysis TEXT,
+                        created_at TEXT,
+                        burst_ratio REAL,
+                        linked_assets TEXT,
+                        topic_tags TEXT,
+                        sentiment_mean REAL,
+                        sentiment_variance REAL,
+                        source_count INTEGER,
+                        intent_weight REAL,
+                        cross_source_score REAL,
+                        weighted_source_score REAL,
+                        centrality REAL,
+                        velocity_windowed REAL,
+                        public_interest REAL,
+                        pipeline_cycle_id TEXT DEFAULT NULL,
+                        UNIQUE(narrative_id, snapshot_date, pipeline_cycle_id)
+                    )
+                """)
+                # Older snapshot tables predate pipeline_cycle_id; only COALESCE
+                # on it when it actually exists, else synthesize a legacy key.
+                old_cols = {r[1] for r in conn.execute(
+                    "PRAGMA table_info(narrative_snapshots)")}
+                cycle_expr = (
+                    "COALESCE(pipeline_cycle_id, snapshot_date || ':legacy')"
+                    if "pipeline_cycle_id" in old_cols
+                    else "snapshot_date || ':legacy'"
+                )
+                conn.execute(f"""
+                    INSERT OR IGNORE INTO narrative_snapshots_new (
+                        id, narrative_id, snapshot_date, ns_score, velocity, entropy,
+                        cohesion, polarization, doc_count, lifecycle_stage, haiku_label,
+                        haiku_description, sonnet_analysis, created_at, burst_ratio,
+                        linked_assets, topic_tags, sentiment_mean, sentiment_variance,
+                        source_count, intent_weight, cross_source_score, weighted_source_score,
+                        centrality, velocity_windowed, public_interest, pipeline_cycle_id
+                    )
+                    SELECT
+                        id, narrative_id, snapshot_date, ns_score, velocity, entropy,
+                        cohesion, polarization, doc_count, lifecycle_stage, haiku_label,
+                        haiku_description, sonnet_analysis, created_at, burst_ratio,
+                        linked_assets, topic_tags, sentiment_mean, sentiment_variance,
+                        source_count, intent_weight, cross_source_score, weighted_source_score,
+                        centrality, velocity_windowed, public_interest,
+                        {cycle_expr}
+                    FROM narrative_snapshots
+                """)
+                conn.execute("DROP TABLE narrative_snapshots")
+                conn.execute("ALTER TABLE narrative_snapshots_new RENAME TO narrative_snapshots")
 
             # V3 Phase 3.2: public_interest column on narratives
             try:
@@ -1262,7 +1448,9 @@ class SqliteRepository(Repository):
                     affected_sectors TEXT NOT NULL DEFAULT '[]',
                     catalyst_type TEXT NOT NULL DEFAULT 'unknown',
                     extracted_at TEXT NOT NULL,
-                    raw_response TEXT
+                    raw_response TEXT,
+                    extraction_status TEXT NOT NULL DEFAULT 'ok',
+                    parse_error TEXT DEFAULT NULL
                 )
             """)
 
@@ -1290,7 +1478,8 @@ class SqliteRepository(Repository):
                     source_diversity INTEGER NOT NULL DEFAULT 0,
                     pressure_score REAL NOT NULL DEFAULT 0.0,
                     contributing_narrative_ids TEXT NOT NULL DEFAULT '[]',
-                    computed_at TEXT NOT NULL DEFAULT ''
+                    computed_at TEXT NOT NULL DEFAULT '',
+                    pipeline_cycle_id TEXT DEFAULT NULL
                 )
             """)
             try:
@@ -1437,7 +1626,84 @@ class SqliteRepository(Repository):
                     time_horizon TEXT,
                     signal_components TEXT,
                     computed_at TEXT,
+                    pipeline_cycle_id TEXT DEFAULT NULL,
                     UNIQUE(narrative_id, ticker)
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS published_narratives (
+                    cycle_id TEXT NOT NULL,
+                    narrative_id TEXT NOT NULL,
+                    name TEXT,
+                    description TEXT,
+                    stage TEXT,
+                    created_at TEXT,
+                    last_updated_at TEXT,
+                    linked_assets TEXT,
+                    topic_tags TEXT,
+                    ns_score REAL,
+                    burst_ratio REAL,
+                    cohesion REAL,
+                    polarization REAL,
+                    velocity REAL,
+                    velocity_windowed REAL,
+                    centrality REAL,
+                    entropy REAL,
+                    document_count INTEGER,
+                    is_coordinated INTEGER,
+                    cycles_in_current_stage INTEGER,
+                    consecutive_declining_cycles INTEGER,
+                    is_catalyst INTEGER,
+                    published_at TEXT NOT NULL,
+                    PRIMARY KEY (cycle_id, narrative_id)
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS published_signals (
+                    cycle_id TEXT NOT NULL,
+                    narrative_id TEXT NOT NULL,
+                    direction TEXT NOT NULL DEFAULT 'neutral',
+                    confidence REAL NOT NULL DEFAULT 0.0,
+                    timeframe TEXT NOT NULL DEFAULT 'unknown',
+                    magnitude TEXT NOT NULL DEFAULT 'incremental',
+                    certainty TEXT NOT NULL DEFAULT 'speculative',
+                    catalyst_type TEXT NOT NULL DEFAULT 'unknown',
+                    extracted_at TEXT NOT NULL,
+                    extraction_status TEXT NOT NULL DEFAULT 'ok',
+                    parse_error TEXT,
+                    published_at TEXT NOT NULL,
+                    PRIMARY KEY (cycle_id, narrative_id)
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS published_ticker_convergence (
+                    cycle_id TEXT NOT NULL,
+                    ticker TEXT NOT NULL,
+                    convergence_count INTEGER NOT NULL DEFAULT 0,
+                    direction_agreement REAL NOT NULL DEFAULT 0.0,
+                    direction_consensus REAL NOT NULL DEFAULT 0.0,
+                    weighted_confidence REAL NOT NULL DEFAULT 0.0,
+                    source_diversity INTEGER NOT NULL DEFAULT 0,
+                    pressure_score REAL NOT NULL DEFAULT 0.0,
+                    contributing_narrative_ids TEXT NOT NULL DEFAULT '[]',
+                    computed_at TEXT NOT NULL DEFAULT '',
+                    published_at TEXT NOT NULL,
+                    PRIMARY KEY (cycle_id, ticker)
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS published_impact_scores (
+                    cycle_id TEXT NOT NULL,
+                    narrative_id TEXT NOT NULL,
+                    ticker TEXT NOT NULL,
+                    direction TEXT,
+                    impact_score REAL,
+                    confidence REAL,
+                    time_horizon TEXT,
+                    signal_components TEXT,
+                    computed_at TEXT,
+                    published_at TEXT NOT NULL,
+                    PRIMARY KEY (cycle_id, narrative_id, ticker)
                 )
             """)
 
@@ -1787,18 +2053,21 @@ class SqliteRepository(Repository):
             return
 
         old_desc: str = ""
+        survivor_doc_count: int = 0
+        absorbed_doc_count: int = 0
         with self._get_conn() as conn:
             # Validate survivor exists
             survivor = conn.execute(
-                "SELECT narrative_id FROM narratives WHERE narrative_id = ?",
+                "SELECT narrative_id, document_count FROM narratives WHERE narrative_id = ?",
                 (survivor_id,),
             ).fetchone()
             if not survivor:
                 raise ValueError(f"Survivor narrative {survivor_id} does not exist")
+            survivor_doc_count = int(survivor["document_count"] or 0)
 
             # Validate absorbed exists and check idempotency
             row = conn.execute(
-                "SELECT stage, description FROM narratives WHERE narrative_id = ?",
+                "SELECT stage, description, document_count FROM narratives WHERE narrative_id = ?",
                 (absorbed_id,),
             ).fetchone()
             if not row:
@@ -1806,8 +2075,15 @@ class SqliteRepository(Repository):
             if row["stage"] == "Dormant" and "Merged into" in (row["description"] or ""):
                 return  # already merged in a prior run — skip
             old_desc = row["description"] or ""
+            absorbed_doc_count = int(row["document_count"] or 0)
 
+        # Capture both centroids before deleting the absorbed one so we can
+        # recompute a weighted-average centroid for the survivor post-merge.
+        _survivor_vec = None
+        _absorbed_vec = None
         if vector_store is not None:
+            _survivor_vec = vector_store.get_vector(survivor_id)
+            _absorbed_vec = vector_store.get_vector(absorbed_id)
             try:
                 vector_store.delete(absorbed_id)
             except Exception as exc:
@@ -1820,7 +2096,7 @@ class SqliteRepository(Repository):
 
         try:
             with self._get_conn() as conn:
-            # 1. Reassign document_evidence rows
+                # 1. Reassign document_evidence rows
                 conn.execute(
                     "UPDATE document_evidence SET narrative_id = ? WHERE narrative_id = ?",
                     (survivor_id, absorbed_id),
@@ -1832,7 +2108,46 @@ class SqliteRepository(Repository):
                     (survivor_id, absorbed_id),
                 )
 
-                # 3. Update survivor's document_count to combined total
+                # 3. Move impact_scores rows onto survivor without keeping absorbed residue.
+                absorbed_scores = conn.execute(
+                    "SELECT ticker, direction, impact_score, confidence, time_horizon, signal_components, computed_at, pipeline_cycle_id FROM impact_scores WHERE narrative_id = ?",
+                    (absorbed_id,),
+                ).fetchall()
+                for score in absorbed_scores:
+                    existing = conn.execute(
+                        "SELECT impact_score, confidence, computed_at FROM impact_scores WHERE narrative_id = ? AND ticker = ?",
+                        (survivor_id, score['ticker']),
+                    ).fetchone()
+                    if existing is None or float(score['impact_score'] or 0.0) > float(existing['impact_score'] or 0.0):
+                        conn.execute(
+                            """
+                            INSERT INTO impact_scores
+                                (narrative_id, ticker, direction, impact_score, confidence, time_horizon, signal_components, computed_at, pipeline_cycle_id)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            ON CONFLICT(narrative_id, ticker) DO UPDATE SET
+                                direction = excluded.direction,
+                                impact_score = excluded.impact_score,
+                                confidence = excluded.confidence,
+                                time_horizon = excluded.time_horizon,
+                                signal_components = excluded.signal_components,
+                                computed_at = excluded.computed_at,
+                                pipeline_cycle_id = excluded.pipeline_cycle_id
+                            """,
+                            (
+                                survivor_id,
+                                score['ticker'],
+                                score['direction'],
+                                score['impact_score'],
+                                score['confidence'],
+                                score['time_horizon'],
+                                score['signal_components'],
+                                score['computed_at'],
+                                score['pipeline_cycle_id'],
+                            ),
+                        )
+                conn.execute("DELETE FROM impact_scores WHERE narrative_id = ?", (absorbed_id,))
+
+                # 4. Update survivor's document_count to authoritative evidence total
                 combined = conn.execute(
                     "SELECT COUNT(*) as cnt FROM document_evidence WHERE narrative_id = ?",
                     (survivor_id,),
@@ -1842,7 +2157,7 @@ class SqliteRepository(Repository):
                     (combined["cnt"], survivor_id),
                 )
 
-                # 4. Preserve existing description, append merge note
+                # 5. Preserve existing description, append merge note
                 merge_note = f"Merged into {survivor_id}"
                 new_desc = f"{old_desc} | {merge_note}" if old_desc else merge_note
                 conn.execute(
@@ -1858,6 +2173,28 @@ class SqliteRepository(Repository):
                 exc,
             )
             raise
+
+        # Recompute survivor centroid as a doc-count-weighted average of both
+        # pre-merge centroids.  Without this the survivor's centroid represents
+        # only its original documents and drifts from the combined document mass,
+        # corrupting future assignment, similarity, and convergence graph edges.
+        if vector_store is not None and _survivor_vec is not None and _absorbed_vec is not None:
+            import numpy as _np
+            total = survivor_doc_count + absorbed_doc_count
+            if total > 0:
+                new_centroid = (
+                    _survivor_vec * survivor_doc_count + _absorbed_vec * absorbed_doc_count
+                ) / total
+            else:
+                new_centroid = (_survivor_vec + _absorbed_vec) / 2.0
+            try:
+                vector_store.update(survivor_id, new_centroid)
+            except Exception as exc:
+                logger.warning(
+                    "merge_narrative: could not update survivor centroid for %s: %s",
+                    survivor_id,
+                    exc,
+                )
 
     def update_narrative_tags(self, narrative_id: str, tags: list) -> None:
         """Store topic tags as JSON array string."""
@@ -1892,12 +2229,26 @@ class SqliteRepository(Repository):
             ).fetchall()
             return [r[0] for r in rows]
 
-    def record_narrative_assignment(self, narrative_id: str, date: str) -> None:
+    def record_narrative_assignment(
+        self,
+        narrative_id: str,
+        date: str,
+        doc_id: str | None = None,
+        pipeline_cycle_id: str | None = None,
+    ) -> None:
         with self._get_conn() as conn:
             conn.execute(
-                "INSERT INTO narrative_assignments (narrative_id, assigned_at) VALUES (?, ?)",
-                (narrative_id, date),
+                "INSERT INTO narrative_assignments (narrative_id, doc_id, assigned_at, pipeline_cycle_id) VALUES (?, ?, ?, ?)",
+                (narrative_id, doc_id, date, pipeline_cycle_id),
             )
+
+    def count_documents_assigned_in_cycle(self, assigned_at: str) -> int:
+        with self._get_conn() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM narrative_assignments WHERE pipeline_cycle_id = ?",
+                (assigned_at,),
+            ).fetchone()
+            return int(row[0]) if row else 0
 
     # --- Candidate Buffer Operations ---
 
@@ -1905,7 +2256,7 @@ class SqliteRepository(Repository):
         with self._get_conn() as conn:
             sql = (
                 "SELECT * FROM candidate_buffer WHERE status = ? "
-                "ORDER BY ingested_at ASC, doc_id ASC"
+                "ORDER BY ingested_at DESC, doc_id DESC"
             )
             params: list = [status]
             if limit is not None:
@@ -1936,6 +2287,32 @@ class SqliteRepository(Repository):
                 """,
                 (status, narrative_id_assigned, doc_id),
             )
+
+    def increment_candidate_cluster_attempts(self, doc_ids: list[str], attempted_at: str) -> None:
+        if not doc_ids:
+            return
+        placeholders = ", ".join("?" * len(doc_ids))
+        with self._get_conn() as conn:
+            conn.execute(
+                f"""
+                UPDATE candidate_buffer
+                SET cluster_attempt_count = COALESCE(cluster_attempt_count, 0) + 1,
+                    last_cluster_attempt_at = ?
+                WHERE doc_id IN ({placeholders})
+                """,
+                [attempted_at, *doc_ids],
+            )
+
+    def defer_candidate_buffer_docs(self, doc_ids: list[str], status: str = "deferred_sparse") -> int:
+        if not doc_ids:
+            return 0
+        placeholders = ", ".join("?" * len(doc_ids))
+        with self._get_conn() as conn:
+            cur = conn.execute(
+                f"UPDATE candidate_buffer SET status = ? WHERE doc_id IN ({placeholders})",
+                [status, *doc_ids],
+            )
+            return int(cur.rowcount or 0)
 
     def get_candidate_buffer_count(self, status: str = "pending") -> int:
         with self._get_conn() as conn:
@@ -2219,6 +2596,185 @@ class SqliteRepository(Repository):
                 list(run_record.values()),
             )
 
+    def begin_pipeline_cycle(self, cycle_id: str, cycle_date: str, started_at: str) -> None:
+        with self._get_conn() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO pipeline_cycles
+                    (cycle_id, cycle_date, started_at, committed_at, status, recovered_by_cycle_id)
+                VALUES (?, ?, ?, NULL, 'running', NULL)
+                """,
+                (cycle_id, cycle_date, started_at),
+            )
+
+    def mark_pipeline_cycle_committed(self, cycle_id: str, committed_at: str) -> None:
+        with self._get_conn() as conn:
+            conn.execute(
+                "UPDATE pipeline_cycles SET status = 'committed', committed_at = ? WHERE cycle_id = ?",
+                (committed_at, cycle_id),
+            )
+
+    def mark_prior_cycles_recovered(self, current_cycle_id: str) -> None:
+        with self._get_conn() as conn:
+            conn.execute(
+                """
+                UPDATE pipeline_cycles
+                SET status = 'recovered', recovered_by_cycle_id = ?
+                WHERE cycle_id != ? AND status = 'running'
+                """,
+                (current_cycle_id, current_cycle_id),
+            )
+
+    def get_latest_committed_cycle_id(self) -> str | None:
+        with self._get_conn() as conn:
+            row = conn.execute(
+                "SELECT cycle_id FROM pipeline_cycles WHERE status = 'committed' ORDER BY committed_at DESC, started_at DESC LIMIT 1"
+            ).fetchone()
+            return str(row[0]) if row and row[0] else None
+
+    def get_pending_assignment_doc_ids_by_narrative(self, exclude_cycle_id: str | None = None) -> dict[str, list[str]]:
+        sql = (
+            "SELECT na.narrative_id, na.doc_id FROM narrative_assignments na "
+            "JOIN pipeline_cycles pc ON pc.cycle_id = na.pipeline_cycle_id "
+            "WHERE pc.status = 'running' AND na.doc_id IS NOT NULL"
+        )
+        params: list = []
+        if exclude_cycle_id:
+            sql += " AND na.pipeline_cycle_id != ?"
+            params.append(exclude_cycle_id)
+        sql += " ORDER BY na.assigned_at ASC, na.id ASC"
+        pending: dict[str, list[str]] = {}
+        with self._get_conn() as conn:
+            rows = conn.execute(sql, params).fetchall()
+            for row in rows:
+                pending.setdefault(row['narrative_id'], []).append(row['doc_id'])
+        return pending
+
+    def publish_swing_cycle_snapshot(
+        self,
+        cycle_id: str,
+        published_at: str,
+        convergences: dict[str, dict] | None = None,
+    ) -> None:
+        import json as _json
+
+        published_rows = []
+        with self._get_conn() as conn:
+            conn.execute("DELETE FROM published_narratives WHERE cycle_id = ?", (cycle_id,))
+            conn.execute("DELETE FROM published_signals WHERE cycle_id = ?", (cycle_id,))
+            conn.execute("DELETE FROM published_ticker_convergence WHERE cycle_id = ?", (cycle_id,))
+            conn.execute("DELETE FROM published_impact_scores WHERE cycle_id = ?", (cycle_id,))
+
+            narrative_rows = conn.execute("""
+                SELECT
+                    narrative_id, name, description, stage,
+                    created_at, last_updated_at,
+                    linked_assets, topic_tags,
+                    ns_score, burst_ratio, cohesion, polarization,
+                    velocity, velocity_windowed, centrality, entropy,
+                    document_count, is_coordinated, cycles_in_current_stage,
+                    consecutive_declining_cycles, is_catalyst
+                FROM narratives
+                WHERE suppressed = 0
+                  AND stage NOT IN ('Declining', 'Dormant')
+                  AND linked_assets IS NOT NULL
+                  AND linked_assets NOT IN ('[]', '')
+            """).fetchall()
+            for row in narrative_rows:
+                conn.execute(
+                    """
+                    INSERT INTO published_narratives (
+                        cycle_id, narrative_id, name, description, stage,
+                        created_at, last_updated_at, linked_assets, topic_tags,
+                        ns_score, burst_ratio, cohesion, polarization,
+                        velocity, velocity_windowed, centrality, entropy,
+                        document_count, is_coordinated, cycles_in_current_stage,
+                        consecutive_declining_cycles, is_catalyst, published_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        cycle_id,
+                        row['narrative_id'], row['name'], row['description'], row['stage'],
+                        row['created_at'], row['last_updated_at'], row['linked_assets'], row['topic_tags'],
+                        row['ns_score'], row['burst_ratio'], row['cohesion'], row['polarization'],
+                        row['velocity'], row['velocity_windowed'], row['centrality'], row['entropy'],
+                        row['document_count'], row['is_coordinated'], row['cycles_in_current_stage'],
+                        row['consecutive_declining_cycles'], row['is_catalyst'], published_at,
+                    ),
+                )
+                published_rows.append(row['narrative_id'])
+
+            signal_rows = conn.execute(
+                "SELECT narrative_id, direction, confidence, timeframe, magnitude, certainty, catalyst_type, extracted_at, extraction_status, parse_error FROM narrative_signals"
+            ).fetchall()
+            for row in signal_rows:
+                if row['narrative_id'] not in published_rows:
+                    continue
+                conn.execute(
+                    """
+                    INSERT INTO published_signals (
+                        cycle_id, narrative_id, direction, confidence, timeframe,
+                        magnitude, certainty, catalyst_type, extracted_at,
+                        extraction_status, parse_error, published_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        cycle_id,
+                        row['narrative_id'], row['direction'], row['confidence'], row['timeframe'],
+                        row['magnitude'], row['certainty'], row['catalyst_type'], row['extracted_at'],
+                        row['extraction_status'], row['parse_error'], published_at,
+                    ),
+                )
+
+            if convergences:
+                for ticker, data in convergences.items():
+                    contributing = data.get('contributing_narrative_ids', [])
+                    if isinstance(contributing, list):
+                        contributing = _json.dumps(contributing)
+                    conn.execute(
+                        """
+                        INSERT INTO published_ticker_convergence (
+                            cycle_id, ticker, convergence_count, direction_agreement,
+                            direction_consensus, weighted_confidence, source_diversity,
+                            pressure_score, contributing_narrative_ids, computed_at, published_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            cycle_id,
+                            ticker,
+                            int(data.get('convergence_count', 0)),
+                            float(data.get('direction_agreement', 0.0)),
+                            float(data.get('direction_consensus', 0.0)),
+                            float(data.get('weighted_confidence', 0.0)),
+                            int(data.get('source_diversity', 0)),
+                            float(data.get('pressure_score', 0.0)),
+                            contributing,
+                            data.get('computed_at') or published_at,
+                            published_at,
+                        ),
+                    )
+
+            impact_rows = conn.execute(
+                "SELECT narrative_id, ticker, direction, impact_score, confidence, time_horizon, signal_components, computed_at FROM impact_scores"
+            ).fetchall()
+            published_set = set(published_rows)
+            for row in impact_rows:
+                if row['narrative_id'] not in published_set:
+                    continue
+                conn.execute(
+                    """
+                    INSERT INTO published_impact_scores (
+                        cycle_id, narrative_id, ticker, direction, impact_score,
+                        confidence, time_horizon, signal_components, computed_at, published_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        cycle_id,
+                        row['narrative_id'], row['ticker'], row['direction'], row['impact_score'],
+                        row['confidence'], row['time_horizon'], row['signal_components'], row['computed_at'], published_at,
+                    ),
+                )
+
     def get_recent_mutations(self, limit: int = 20) -> list[dict]:
         """Return recent mutation events with narrative names."""
         with self._get_conn() as conn:
@@ -2242,15 +2798,72 @@ class SqliteRepository(Repository):
 
     # --- Document Evidence Operations ---
 
+    @staticmethod
+    def _canonicalize_source_url(source_url: str | None) -> str:
+        raw = (source_url or "").strip()
+        if not raw:
+            return ""
+        try:
+            parts = urlsplit(raw)
+        except ValueError:
+            return raw
+        scheme = (parts.scheme or "https").lower()
+        netloc = parts.netloc.lower()
+        path = parts.path or ""
+        query_pairs = []
+        for key, value in parse_qsl(parts.query, keep_blank_values=True):
+            key_lower = key.lower()
+            if key_lower.startswith("utm_") or key_lower in {"fbclid", "gclid", "mc_cid", "mc_eid", "ref", "source"}:
+                continue
+            query_pairs.append((key, value))
+        query = urlencode(sorted(query_pairs), doseq=True)
+        return urlunsplit((scheme, netloc, path, query, ""))
+
+    @staticmethod
+    def _build_evidence_fingerprint(evidence: dict, canonical_source_url: str) -> str:
+        parts = [
+            canonical_source_url,
+            str(evidence.get("source_domain") or "").strip().lower(),
+            str(evidence.get("published_at") or "").strip(),
+            re.sub(r"\s+", " ", str(evidence.get("excerpt") or "").strip().lower()),
+        ]
+        if not any(parts):
+            return ""
+        return hashlib.sha256("\n".join(parts).encode("utf-8", errors="ignore")).hexdigest()
+
     def insert_document_evidence(self, evidence: dict) -> None:
+        record = dict(evidence)
+        canonical_source_url = self._canonicalize_source_url(record.get("source_url"))
+        record["canonical_source_url"] = canonical_source_url
+        record["evidence_fingerprint"] = self._build_evidence_fingerprint(record, canonical_source_url)
         with self._get_conn() as conn:
-            safe_cols = self._sanitize_columns(evidence.keys())
+            existing = conn.execute(
+                "SELECT 1 FROM document_evidence WHERE doc_id = ?",
+                (record.get("doc_id"),),
+            ).fetchone()
+            safe_cols = self._sanitize_columns(record.keys())
             cols = ", ".join(safe_cols)
             placeholders = ", ".join("?" * len(safe_cols))
-            conn.execute(
-                f"INSERT INTO document_evidence ({cols}) VALUES ({placeholders})",
-                list(evidence.values()),
-            )
+            values = [record.get(col) for col in safe_cols]
+            if existing:
+                update_cols = [col for col in safe_cols if col != "doc_id"]
+                update_clause = ", ".join(f"{col} = ?" for col in update_cols)
+                conn.execute(
+                    f"UPDATE document_evidence SET {update_clause} WHERE doc_id = ?",
+                    [record.get(col) for col in update_cols] + [record.get("doc_id")],
+                )
+                return
+            try:
+                conn.execute(
+                    f"INSERT INTO document_evidence ({cols}) VALUES ({placeholders})",
+                    values,
+                )
+            except sqlite3.IntegrityError:
+                logger.info(
+                    "insert_document_evidence: duplicate suppressed for narrative_id=%s url=%s",
+                    record.get("narrative_id"),
+                    canonical_source_url or record.get("source_url") or "",
+                )
 
     def get_document_evidence(self, narrative_id: str, *, limit: int = 0, offset: int = 0) -> list[dict]:
         with self._get_conn() as conn:
@@ -2312,8 +2925,10 @@ class SqliteRepository(Repository):
     # --- Snapshot Operations ---
 
     def save_snapshot(self, snapshot: dict) -> None:
+        record = dict(snapshot)
+        record.setdefault("pipeline_cycle_id", record.get("snapshot_date", "legacy"))
         with self._get_conn() as conn:
-            safe_cols = self._sanitize_columns(snapshot.keys())
+            safe_cols = self._sanitize_columns(record.keys())
             cols = ", ".join(safe_cols)
             placeholders = ", ".join("?" * len(safe_cols))
             update_clause = ", ".join(
@@ -2322,15 +2937,20 @@ class SqliteRepository(Repository):
             conn.execute(
                 f"""
                 INSERT INTO narrative_snapshots ({cols}) VALUES ({placeholders})
-                ON CONFLICT(narrative_id, snapshot_date) DO UPDATE SET {update_clause}
+                ON CONFLICT(narrative_id, snapshot_date, pipeline_cycle_id) DO UPDATE SET {update_clause}
                 """,
-                list(snapshot.values()),
+                [record.get(col) for col in safe_cols],
             )
 
     def get_snapshot(self, narrative_id: str, snapshot_date: str) -> dict | None:
         with self._get_conn() as conn:
             row = conn.execute(
-                "SELECT * FROM narrative_snapshots WHERE narrative_id = ? AND snapshot_date = ?",
+                """
+                SELECT * FROM narrative_snapshots
+                WHERE narrative_id = ? AND snapshot_date = ?
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                """,
                 (narrative_id, snapshot_date),
             ).fetchone()
             return dict(row) if row else None
@@ -2343,7 +2963,7 @@ class SqliteRepository(Repository):
                 """
                 SELECT * FROM narrative_snapshots
                 WHERE narrative_id = ? AND snapshot_date BETWEEN ? AND ?
-                ORDER BY snapshot_date DESC
+                ORDER BY snapshot_date DESC, created_at DESC
                 """,
                 (narrative_id, start_date, end_date),
             ).fetchall()
@@ -2354,7 +2974,7 @@ class SqliteRepository(Repository):
         with self._get_conn() as conn:
             rows = conn.execute(
                 "SELECT doc_count FROM narrative_snapshots "
-                "WHERE narrative_id = ? ORDER BY snapshot_date DESC LIMIT ?",
+                "WHERE narrative_id = ? ORDER BY snapshot_date DESC, created_at DESC LIMIT ?",
                 (narrative_id, lookback_days),
             ).fetchall()
         if not rows or len(rows) < 2:
@@ -2369,7 +2989,7 @@ class SqliteRepository(Repository):
         with self._get_conn() as conn:
             rows = conn.execute(
                 "SELECT * FROM narrative_snapshots WHERE narrative_id = ? "
-                "ORDER BY snapshot_date DESC LIMIT ?",
+                "ORDER BY snapshot_date DESC, created_at DESC LIMIT ?",
                 (narrative_id, days),
             ).fetchall()
         return [dict(r) for r in rows]
@@ -3324,8 +3944,8 @@ class SqliteRepository(Repository):
                 INSERT OR REPLACE INTO narrative_signals
                     (narrative_id, direction, confidence, timeframe, magnitude,
                      certainty, key_actors, affected_sectors, catalyst_type,
-                     extracted_at, raw_response)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     extracted_at, raw_response, extraction_status, parse_error)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 nar_id,
                 signal.get("direction", "neutral"),
@@ -3338,6 +3958,37 @@ class SqliteRepository(Repository):
                 signal.get("catalyst_type", "unknown"),
                 extracted_at,
                 signal.get("raw_response", ""),
+                signal.get("extraction_status", "ok"),
+                signal.get("parse_error"),
+            ))
+
+    def record_narrative_signal_failure(
+        self,
+        narrative_id: str,
+        raw_response: str,
+        extracted_at: str,
+        parse_error: str,
+    ) -> None:
+        with self._get_conn() as conn:
+            existing = conn.execute(
+                "SELECT key_actors, affected_sectors FROM narrative_signals WHERE narrative_id = ?",
+                (narrative_id,),
+            ).fetchone()
+            key_actors = existing['key_actors'] if existing else '[]'
+            affected_sectors = existing['affected_sectors'] if existing else '[]'
+            conn.execute("""
+                INSERT OR REPLACE INTO narrative_signals
+                    (narrative_id, direction, confidence, timeframe, magnitude,
+                     certainty, key_actors, affected_sectors, catalyst_type,
+                     extracted_at, raw_response, extraction_status, parse_error)
+                VALUES (?, 'neutral', 0.0, 'unknown', 'incremental', 'speculative', ?, ?, 'unknown', ?, ?, 'error', ?)
+            """, (
+                narrative_id,
+                key_actors,
+                affected_sectors,
+                extracted_at,
+                raw_response,
+                parse_error,
             ))
 
     def get_narrative_signal(self, narrative_id: str) -> dict | None:
@@ -3351,7 +4002,7 @@ class SqliteRepository(Repository):
     def get_all_narrative_signals(self, *, limit: int = 0, offset: int = 0) -> list[dict]:
         sql = (
             "SELECT narrative_id, direction, confidence, timeframe, magnitude, certainty, "
-            "key_actors, affected_sectors, catalyst_type, extracted_at "
+            "key_actors, affected_sectors, catalyst_type, extracted_at, extraction_status, parse_error "
             "FROM narrative_signals ORDER BY extracted_at DESC"
         )
         params: list = []
@@ -3448,8 +4099,8 @@ class SqliteRepository(Repository):
                 INSERT OR REPLACE INTO ticker_convergence
                     (ticker, convergence_count, direction_agreement,
                      direction_consensus, weighted_confidence, source_diversity,
-                     pressure_score, contributing_narrative_ids, computed_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     pressure_score, contributing_narrative_ids, computed_at, pipeline_cycle_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 ticker,
                 int(data.get("convergence_count", 0)),
@@ -3460,6 +4111,7 @@ class SqliteRepository(Repository):
                 float(data.get("pressure_score", 0.0)),
                 contributing,
                 computed_at,
+                data.get("pipeline_cycle_id"),
             ))
 
     def get_ticker_convergence(self, ticker: str) -> dict | None:
@@ -3502,8 +4154,8 @@ class SqliteRepository(Repository):
                     INSERT INTO ticker_convergence
                         (ticker, convergence_count, direction_agreement,
                          direction_consensus, weighted_confidence, source_diversity,
-                         pressure_score, contributing_narrative_ids, computed_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         pressure_score, contributing_narrative_ids, computed_at, pipeline_cycle_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     ticker,
                     int(data.get("convergence_count", 0)),
@@ -3514,6 +4166,7 @@ class SqliteRepository(Repository):
                     float(data.get("pressure_score", 0.0)),
                     contributing,
                     computed_at,
+                    data.get("pipeline_cycle_id"),
                 ))
 
     def check_all_orphans(self) -> dict[str, dict]:
@@ -3591,15 +4244,16 @@ class SqliteRepository(Repository):
             conn.execute("""
                 INSERT INTO impact_scores
                     (narrative_id, ticker, direction, impact_score, confidence,
-                     time_horizon, signal_components, computed_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                     time_horizon, signal_components, computed_at, pipeline_cycle_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(narrative_id, ticker) DO UPDATE SET
                     direction = excluded.direction,
                     impact_score = excluded.impact_score,
                     confidence = excluded.confidence,
                     time_horizon = excluded.time_horizon,
                     signal_components = excluded.signal_components,
-                    computed_at = excluded.computed_at
+                    computed_at = excluded.computed_at,
+                    pipeline_cycle_id = excluded.pipeline_cycle_id
             """, (
                 narrative_id,
                 ticker,
@@ -3609,6 +4263,7 @@ class SqliteRepository(Repository):
                 data.get("time_horizon", ""),
                 signal_components,
                 computed_at,
+                data.get("pipeline_cycle_id"),
             ))
 
     def get_impact_scores_for_narrative(self, narrative_id: str) -> list[dict]:

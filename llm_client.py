@@ -49,16 +49,22 @@ _HAIKU_FALLBACKS: dict[str, str] = {
 }
 
 
-def parse_signal_json(text: str, fallback: str | None = None) -> dict:
+def parse_signal_json(
+    text: str,
+    fallback: str | None = None,
+    *,
+    allow_hardcoded_fallback: bool = True,
+) -> dict | None:
     """
     Extract a JSON signal object from LLM response text.
 
     Three-tier strategy:
       1. Find line starting with SIGNAL_JSON: and parse what follows
       2. Find any {…} block containing a "direction" key
-      3. Return parsed fallback default
+      3. Return parsed fallback default when explicitly allowed
 
-    Never raises. Returns a raw dict (caller should pass to validate_signal_fields).
+    Never raises. Returns a raw dict on success, or None when parsing fails and
+    hardcoded fallback is disabled.
     """
     import json
 
@@ -105,6 +111,10 @@ def parse_signal_json(text: str, fallback: str | None = None) -> dict:
         pass
 
     # Tier 3: final fallback
+    if not allow_hardcoded_fallback:
+        logger.debug("parse_signal_json: parse failed with fallback disabled")
+        return None
+
     logger.debug("parse_signal_json: using hardcoded fallback")
     try:
         return json.loads(fallback or _HAIKU_FALLBACKS["extract_signal"])
