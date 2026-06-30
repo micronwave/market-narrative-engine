@@ -30,6 +30,15 @@
 
 \---
 
+## Operational Notes (Local Runtime)
+
+- `run_pipeline.bat` is the Windows Task Scheduler entry point for periodic pipeline runs.
+- Runtime logs are written to `logs/`.
+- `AUTH_MODE` defaults to `stub`; JWT flows activate only when JWT environment settings are configured.
+- The Next.js frontend uses `/api/*` relative paths and proxies them to FastAPI on `127.0.0.1:8000`.
+
+\---
+
 
 
 \## File Structure

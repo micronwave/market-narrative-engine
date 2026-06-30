@@ -39,7 +39,7 @@ Two services run concurrently:
 
 | Service | Port | Entry Point |
 |---------|------|-------------|
-| FastAPI API | 8000 | `api/main.py` (~66 endpoints) |
+| FastAPI API | 8000 | `api/main.py` |
 | Next.js frontend | 3000 | `frontend/` (proxies `/api/*` → 8000) |
 
 ### Pipeline (`pipeline.py`)
@@ -130,24 +130,11 @@ Adapters are conditionally enabled via `ENABLE_TWELVE_DATA`, `ENABLE_COINGECKO` 
 - `EarningsService` (`api/earnings_service.py`) — upcoming earnings calendar
 - `SECTOR_MAP` (`api/sector_map.py`) — ticker→sector mapping for convergence analysis
 
-### Extension Modules
-
-Manager-pattern classes instantiated in `api/main.py`, backed by `SqliteRepository`:
-
-- `NotificationManager` (`notifications.py`) — rules-based alerting (rule types: `ns_above`, `ns_below`, `new_narrative`, `mutation`, `stage_change`, `catalyst`)
-- `PortfolioManager` (`portfolio.py`) — holdings tracking, narrative impact scoring, CSV import (max 1000 rows)
-- `WatchlistManager` (`watchlist.py`) — ticker/narrative watchlists
-- `ExportManager` (`export.py`) — JSON/CSV export, social share text generation
-
 ### Signal Redesign Modules
 
 - `convergence.py` — detects multiple independent narratives converging on same ticker; independence via centroid cosine similarity below `CONVERGENCE_INDEPENDENCE_THRESHOLD`
 - `source_tiers.py` — 5-tier domain authority classification (1=wire services, 5=social/retail); escalation tracking per narrative
 - `validate_signal.py` — diagnostic: plots narrative velocity vs ticker price, outputs PNG + correlation summary
-
-### Twitter Bot (`twitter_bot.py`)
-
-Outbound posting is retired from pipeline runtime. `twitter_bot.py` is retained for legacy helpers/tests and is no longer called automatically by `pipeline.py`.
 
 ## Configuration
 
@@ -175,10 +162,6 @@ Frontend tests use Jest + @testing-library/react. Use `data-testid` for selector
 - `test_phase{N}_integration.py`, `test_full_integration.py` — end-to-end integration
 
 **Test assertions that check CSS class names:** Several tests match on `bullish`, `bearish`, `alert`, `critical`, `accent-muted`, `accent-text`, `purple`, `line-through`. Changing these Tailwind utility names will break tests.
-
-Backend: ~45 test files in `tests/`. Frontend: 13 Jest suites in `frontend/src/__tests__/`.
-
-Build results go in `BUILD_LOG.md`. Frontend build log in `frontend_build_log`.
 
 ## Compliance
 

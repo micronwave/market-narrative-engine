@@ -1,35 +1,35 @@
 # Test Matrix — Narrative Intelligence Platform
 
-| Phase | Unit | Integration | Auth/E2E | Manual | Status |
-|-------|------|-------------|----------|--------|--------|
-| C1 | 3 | 2 | 0 | 2 | PASS |
-| C2 | 5 | 2 | 2 | 2 | PASS |
-| C3 | 6 | 4 | 0 | 2 | PASS |
-| C4 | 8 | 4 | 0 | 3 | PASS |
+## Automated test runners
 
-## Automated Test Counts (actual)
+Backend tests are standalone Python scripts using local `S(...)` / `T(...)` helpers.
 
-| Suite | Runner | Tests | Status |
-|-------|--------|-------|--------|
-| `test_c2_api.py` | Python custom S/T | 91 | ✅ PASS |
-| `test_c3_api.py` | Python custom S/T | 15 | ✅ PASS |
-| `test_c4_api.py` | Python custom S/T | 40 | ✅ PASS |
-| `c2.test.tsx` | Jest / React Testing Library | 5 | ✅ PASS |
-| `c3.test.tsx` | Jest / React Testing Library | 17 | ✅ PASS |
-| `c4.test.tsx` | Jest / React Testing Library | 13 | ✅ PASS |
+```bash
+# Backend (from project root; use -X utf8 on Windows)
+python -X utf8 tests/test_c2_api.py
+python -X utf8 tests/test_f1_api.py
+```
 
-**Total automated tests: 181 (146 backend + 35 frontend)**
+Frontend tests use Jest + Testing Library, plus TypeScript type checking.
 
-## Manual Check Coverage
+```bash
+cd frontend && npx jest --watchAll=false
+cd frontend && npx tsc --noEmit
+```
 
-| Phase | Check | Description |
-|-------|-------|-------------|
-| C1 | C1-M1 | Ticker bar displays entries, updates on reload |
-| C1 | C1-M2 | Blurred card CTA modal — appears/dismisses |
-| C2 | C2-M1 | `/narrative/{id}` renders detail fields |
-| C2 | C2-M2 | `/billing` credit top-up increments balance |
-| C3 | C3-M1 | Tab → Investigate → drawer opens → Escape closes |
-| C3 | C3-M2 | Ticker updates within 15s (polling) |
-| C4 | C4-M1 | Coordination flag tooltip on `/signals` |
-| C4 | C4-M2 | Credit top-up modal resembles Stripe checkout |
-| C4 | C4-M3 | Font consistency (Inter body, Roboto Mono data) |
+## Coverage map by suite family
+
+| Family | Path pattern | Focus |
+|---|---|---|
+| Customer API | `tests/test_c*_api.py` | core narrative/list/detail API behavior |
+| Data pipeline API | `tests/test_d*_api.py` | data/coordination/ingestion-adjacent API features |
+| Feature API | `tests/test_f*_api.py` | staged feature surfaces |
+| Signal redesign | `tests/test_v3_phase*.py`, `tests/test_signal_p*.py` | signal/model redesign behavior |
+| Integration | `tests/test_phase*_integration.py`, `tests/test_full_integration.py` | end-to-end and cross-module flows |
+| Audit/quality | `tests/test_*_audit.py` | contract and quality guardrails |
+| Frontend Jest | `frontend/src/__tests__/*.test.tsx` | UI and client contract behavior |
+
+## Manual checks (examples)
+
+Manual checks should target active pages and flows (`/`, `/narrative/[id]`, `/signals`, `/stocks`, `/portfolio`, `/analytics`) and avoid retired billing/credits flows.
+

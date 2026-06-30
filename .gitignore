@@ -37,9 +37,9 @@ signal_validation*.png
 # Runtime lock file
 pipeline.lock
 
-# Personal tracking/test docs (not part of the template)
-stock_test.md
-personal_*.md
+# Saved web pages / personal reference dumps
+Universal workflow technique documentation for Claude Code - Claude.html
+Universal workflow technique documentation for Claude Code - Claude_files/
 
 # Logs
 logs/
@@ -61,3 +61,6 @@ Thumbs.db
 
 # Log files (individual, in case they're outside logs/)
 *.log
+
+# Template sync working directory
+.tmp_template/
