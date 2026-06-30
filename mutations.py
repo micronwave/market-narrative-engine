@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 logger = logging.getLogger(__name__)
 
 from llm_client import LlmClient
+from prompt_utils import sanitize_for_prompt
 from repository import SqliteRepository
 from settings import Settings
 
@@ -295,12 +296,17 @@ class MutationDetector:
         if not narrative:
             return "Analysis unavailable"
 
+        name = sanitize_for_prompt(narrative["name"], max_len=200)
+        old_val_safe = sanitize_for_prompt(str(old_val), max_len=200)
+        new_val_safe = sanitize_for_prompt(str(new_val), max_len=200)
+        mutation_type_safe = sanitize_for_prompt(str(mutation_type), max_len=50)
+
         prompt = f"""A financial narrative mutated overnight.
 
-Narrative: {narrative["name"]}
-Change: {mutation_type}
-Before: {old_val}
-After: {new_val}
+Narrative: {name}
+Change: {mutation_type_safe}
+Before: {old_val_safe}
+After: {new_val_safe}
 
 In 2-3 sentences, explain what likely caused this change and what it means for investors."""
 
