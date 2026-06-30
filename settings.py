@@ -47,7 +47,7 @@ class Settings(BaseSettings):
 
     # --- LSH deduplication ---
     LSH_THRESHOLD: float = 0.85
-    LSH_NUM_PERM: int = 128
+    LSH_NUM_PERM: int = 256
 
     # --- Paths ---
     ASSET_LIBRARY_PATH: str = "./data/asset_library.pkl"
@@ -58,8 +58,8 @@ class Settings(BaseSettings):
 
     # --- Ingestion ---
     SCRAPE_MAX_THREADS: int = 3
-    SYNC_BURST_WINDOW_SECONDS: int = 600   # V3: lowered from 300 for cold-start data
-    SYNC_BURST_MIN_SOURCES: int = 3        # V3: lowered from 5 for cold-start data
+    SYNC_BURST_WINDOW_SECONDS: int = 300
+    SYNC_BURST_MIN_SOURCES: int = 5
 
     # --- Optional API keys (all default to empty = disabled) ---
     MARKETAUX_API_KEY: str = ""
@@ -162,9 +162,11 @@ class Settings(BaseSettings):
     OUTPUT_EXCERPT_TRUNCATION: int = 280
     EMIT_OUTPUT_TO_STDOUT: bool = False
 
-    # --- Centrality scaling ---
+    # --- Centrality ---
     CENTRALITY_EXACT_MAX_NODES: int = 200
     CENTRALITY_APPROX_K: int = 50
+    CENTRALITY_SIMILARITY_THRESHOLD: float = 0.40
+    CENTRALITY_CATALYST_TOP_FRACTION: float = 0.10
 
     # --- API rate limits ---
     MARKETAUX_DAILY_LIMIT: int = 100

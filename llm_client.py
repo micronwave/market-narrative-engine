@@ -347,6 +347,19 @@ class LlmClient:
             self._record_transport_failure()
         else:
             self._reset_transport_failure_counter()
+        self._repository.log_llm_call(
+            {
+                "call_id": str(uuid.uuid4()),
+                "narrative_id": narrative_id,
+                "model": self._settings.HAIKU_MODEL,
+                "task_type": task_type,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cost_estimate_usd": 0.0,
+                "called_at": datetime.now(timezone.utc).isoformat(),
+                "error": str(last_exc),
+            }
+        )
         self._log_pipeline_error(
             step_name=f"haiku_call_failed:{task_type}",
             error_message=str(last_exc),
@@ -433,6 +446,18 @@ class LlmClient:
 
             # Gates 1–3 failed — narrative not eligible, return None
             logger.debug("Sonnet gates failed for %s: %s", narrative_id, reason)
+            self._repository.log_llm_call(
+                {
+                    "call_id": str(uuid.uuid4()),
+                    "narrative_id": narrative_id,
+                    "model": "gate_rejected",
+                    "task_type": f"sonnet_gate_rejected:{reason}",
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "cost_estimate_usd": 0.0,
+                    "called_at": datetime.now(timezone.utc).isoformat(),
+                }
+            )
             return None
 
         # All gates passed — attempt Sonnet call (up to 3 attempts).
@@ -515,6 +540,19 @@ class LlmClient:
             narrative_id,
             attempts_made,
             last_exc,
+        )
+        self._repository.log_llm_call(
+            {
+                "call_id": str(uuid.uuid4()),
+                "narrative_id": narrative_id,
+                "model": self._settings.SONNET_MODEL,
+                "task_type": "mutation_analysis",
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cost_estimate_usd": 0.0,
+                "called_at": datetime.now(timezone.utc).isoformat(),
+                "error": str(last_exc),
+            }
         )
         self._log_pipeline_error(
             step_name="sonnet_call_failed",

@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 
 import requests
 
-from ingester import RawDocument, is_financially_relevant, is_valid_source_url
+from ingester import RawDocument, _log_failed_job, is_financially_relevant, is_valid_source_url
 from repository import SqliteRepository
 from settings import Settings
 
@@ -124,7 +124,9 @@ class MarketauxIngester:
             logger.info("[MarketAux] Ingested %d documents", len(docs))
             return docs
         except requests.exceptions.RequestException as exc:
-            logger.warning("[MarketAux] ingestion failed: %s", _sanitize_exception(exc))
+            msg = _sanitize_exception(exc)
+            logger.warning("[MarketAux] ingestion failed: %s", msg)
+            _log_failed_job(self.repository, self._API_URL, "marketaux", msg)
             return []
 
 
@@ -181,7 +183,9 @@ class NewsdataIngester:
             logger.info("[NewsData] Ingested %d documents", len(docs))
             return docs
         except requests.exceptions.RequestException as exc:
-            logger.warning("[NewsData] ingestion failed: %s", _sanitize_exception(exc))
+            msg = _sanitize_exception(exc)
+            logger.warning("[NewsData] ingestion failed: %s", msg)
+            _log_failed_job(self.repository, self._API_URL, "newsdata", msg)
             return []
 
 

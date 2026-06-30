@@ -24,7 +24,7 @@ from settings import settings
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# S&P 500 constituents — representative list (~200 major US tickers)
+# Curated equity universe — 319 large/mid-cap US tickers (not a complete S&P 500).
 # Company names are used as a fallback when no 10-K business section is found.
 # ---------------------------------------------------------------------------
 TICKERS: dict[str, str] = {
@@ -990,6 +990,17 @@ def build(download_dir: str | None = None) -> None:
     )
     if failed:
         logger.warning("Failed (%d): %s", len(failed), failed)
+
+    # Completeness gate: warn loudly if more than 20 % of SEC tickers failed.
+    sec_attempted = len(TICKERS)
+    sec_failed = sum(1 for t in failed if t in TICKERS)
+    if sec_attempted > 0 and sec_failed / sec_attempted > 0.20:
+        logger.error(
+            "COMPLETENESS WARNING: %d/%d SEC tickers failed (%.0f%%). "
+            "The saved library may be too sparse for reliable asset mapping. "
+            "Re-run after fixing network/SEC access.",
+            sec_failed, sec_attempted, 100 * sec_failed / sec_attempted,
+        )
 
 
 if __name__ == "__main__":
