@@ -64,3 +64,7 @@ Thumbs.db
 
 # Template sync working directory
 .tmp_template/
+
+# Temp test directories
+.tmp/
+.tmp_tests/

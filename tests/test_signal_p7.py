@@ -44,6 +44,7 @@ if _ROOT not in sys.path:
 from repository import SqliteRepository
 from signal_trainer import build_training_dataset
 from signals import compute_entropy, extract_known_tickers, _accept_fallback_ticker
+from swing_signal import build_candidates
 
 _results = []
 
@@ -191,13 +192,16 @@ u2_excerpts = ["NKE improved while NKE stayed in focus across the quarter."]
 T("two mentions in one excerpt rejected", not _accept_fallback_ticker(u2_excerpts, "NKE"),
   f"got { _accept_fallback_ticker(u2_excerpts, 'NKE') }")
 
-S("SP7-FBP-U3: one plain mention in each of two excerpts accepted")
+S("SP7-FBP-U3: plain mentions require company co-reference")
 u3_excerpts = [
     "NKE reported stronger sales and margin expansion.",
     "Separately, NKE guided higher for the next quarter.",
 ]
-T("distinct excerpts accepted", _accept_fallback_ticker(u3_excerpts, "NKE"),
+T("distinct excerpts need company co-reference", not _accept_fallback_ticker(u3_excerpts, "NKE"),
   f"got { _accept_fallback_ticker(u3_excerpts, 'NKE') }")
+T("distinct excerpts accepted with company co-reference",
+  _accept_fallback_ticker(u3_excerpts + ["Nike margin commentary expanded."], "NKE", "Nike Inc"),
+  f"got { _accept_fallback_ticker(u3_excerpts + ['Nike margin commentary expanded.'], 'NKE', 'Nike Inc') }")
 
 S("SP7-FBP-U4: single $TICKER mention accepted")
 u4_excerpts = ["Watch $NKE after the earnings release."]
@@ -232,19 +236,46 @@ u8_candidates = extract_known_tickers(" ".join(u8_excerpts))
 u8_fallback = [t for t in u8_candidates if _accept_fallback_ticker(u8_excerpts, t)]
 T("strong fallback forms kept", "AAPL" in u8_fallback and "MSFT" in u8_fallback, f"got {u8_fallback}")
 T("plain single mention still rejected", "NKE" not in u8_fallback, f"got {u8_fallback}")
+S("SP7-FBP-U9: swing signal excludes text mentions by default")
+_swing_narrative = {
+    "narrative_id": "n-swing-text",
+    "linked_assets": json.dumps([
+        {"ticker": "NKE", "source": "text_mention", "similarity_score": 0.0},
+        {"ticker": "AAPL", "similarity_score": 0.82},
+    ]),
+    "stage": "Growing",
+    "ns_score": 0.8,
+    "burst_ratio": 2.0,
+    "cohesion": 0.8,
+    "velocity_windowed": 0.2,
+    "document_count": 12,
+}
+_swing_candidates_default = build_candidates([_swing_narrative], {}, {}, {}, "any")
+T("text_mention ticker excluded from swing candidates",
+  [c["ticker"] for c in _swing_candidates_default] == ["AAPL"],
+  f"got {[c['ticker'] for c in _swing_candidates_default]}")
+_swing_candidates_allowed = build_candidates(
+    [_swing_narrative], {}, {}, {}, "any", allow_text_mentions=True,
+)
+T("allow_text_mentions includes text fallback ticker",
+  sorted(c["ticker"] for c in _swing_candidates_allowed) == ["AAPL", "NKE"],
+  f"got {sorted(c['ticker'] for c in _swing_candidates_allowed)}")
 
 # ===========================================================================
 # Section 5: pipeline wiring guard
 # ===========================================================================
-S("SP7-FBP-I1: pipeline Step 19 calls _accept_fallback_ticker")
+S("SP7-FBP-I1: pipeline _map_narrative_assets uses evidence-gated ticker fallback")
 pipeline_src = (_ROOT_PATH / "pipeline.py").read_text(encoding="utf-8")
 step19_start = pipeline_src.find("# Step 19: Emit Output")
 step19_end = pipeline_src.find("# Step 19.1: Catalyst Anchoring (Phase 4)")
 step19_block = pipeline_src[step19_start:step19_end] if step19_start != -1 and step19_end != -1 else pipeline_src
-T("Step 19 fallback helper call present", "_accept_fallback_ticker(evidence_excerpts, t)" in step19_block,
-  "missing helper call in Step 19 block")
-T("Step 19 uses distinct evidence excerpts", "evidence_excerpts = [" in step19_block,
-  "missing excerpt list in Step 19 block")
+T("evidence gate helper present in pipeline", "_ticker_has_evidence(" in pipeline_src,
+  "missing _ticker_has_evidence helper in pipeline.py")
+T("_map_narrative_assets builds evidence_excerpts", "evidence_excerpts" in pipeline_src,
+  "missing evidence_excerpts in pipeline.py")
+T("_map_narrative_assets clears stale linked assets",
+  '"linked_assets": json.dumps(linked_assets)' in pipeline_src,
+  "missing unconditional linked_assets persistence")
 
 S("SP7-FBP-I2: no function-local extract_known_tickers import remains")
 T("no local import in Step 19", "from signals import extract_known_tickers" not in step19_block,
