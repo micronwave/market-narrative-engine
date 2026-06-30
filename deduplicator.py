@@ -27,7 +27,9 @@ class Deduplicator:
         self._threshold = threshold
         self._num_perm = num_perm
         self._lsh_path = lsh_path
-        self._lsh: MinHashLSH = MinHashLSH(threshold=threshold, num_perm=num_perm)
+        # b=32, r=8 → 32*8=256 perms; P(collision | J=0.85) ≈ 99.9% recall.
+        # threshold arg is intentionally omitted so datasketch doesn't override band layout.
+        self._lsh: MinHashLSH = MinHashLSH(params=(32, 8), num_perm=num_perm)
         self._doc_id_to_minhash: dict[str, MinHash] = {}
 
     # ------------------------------------------------------------------
@@ -85,7 +87,7 @@ class Deduplicator:
                     self._lsh_path,
                     unlink_exc,
                 )
-            self._lsh = MinHashLSH(threshold=self._threshold, num_perm=self._num_perm)
+            self._lsh = MinHashLSH(params=(32, 8), num_perm=self._num_perm)
             return False
 
     def save(self) -> None:
@@ -108,33 +110,45 @@ class Deduplicator:
     # Core operations
     # ------------------------------------------------------------------
 
-    def get_signature(self, doc: RawDocument) -> MinHash:
-        """Compute MinHash signature for a document using 3-word shingles."""
-        m = MinHash(num_perm=self._num_perm)
+    def get_signature(self, doc: RawDocument) -> MinHash | None:
+        """Compute MinHash signature for a document using 3-word shingles.
+        Returns None for empty/whitespace-only documents so callers can skip them."""
         shingles = _extract_shingles(doc.raw_text)
         if not shingles:
-            # Deterministic sentinel so all empty/whitespace-only docs
-            # hash identically and are detected as duplicates of each other.
-            m.update(b"__EMPTY_DOCUMENT__")
-            return m
+            return None
+        m = MinHash(num_perm=self._num_perm)
         for shingle in shingles:
             m.update(shingle.encode("utf-8"))
         return m
 
-    def is_duplicate(self, doc: RawDocument) -> tuple[bool, MinHash]:
+    def is_duplicate(self, doc: RawDocument) -> tuple[bool, MinHash | None]:
         """Check if document is a near-duplicate of anything in the index.
         Returns (is_dup, signature) so callers can pass the signature to
-        add_with_signature() without recomputing it."""
+        add_with_signature() without recomputing it.
+
+        LSH.query() returns candidate pairs — it is a recall filter, not a
+        similarity decision.  Each candidate is verified against the stored
+        MinHash so only pairs whose estimated Jaccard meets self._threshold
+        are treated as duplicates."""
         sig = self.get_signature(doc)
+        if sig is None:
+            return False, None
         try:
-            result = self._lsh.query(sig)
+            candidates = self._lsh.query(sig)
         except ValueError:
             # LSH index is empty — datasketch may raise on query before any insert
             return False, sig
-        return len(result) > 0, sig
+        for candidate_id in candidates:
+            stored = self._doc_id_to_minhash.get(candidate_id)
+            if stored is not None and sig.jaccard(stored) >= self._threshold:
+                return True, sig
+        return False, sig
 
-    def add_with_signature(self, doc: RawDocument, sig: MinHash) -> None:
-        """Add document to the index using a pre-computed signature."""
+    def add_with_signature(self, doc: RawDocument, sig: MinHash | None) -> None:
+        """Add document to the index using a pre-computed signature.
+        No-ops silently when sig is None (empty document)."""
+        if sig is None:
+            return
         try:
             self._lsh.insert(doc.doc_id, sig)
         except ValueError as exc:
@@ -172,7 +186,9 @@ def _extract_shingles(text: str) -> set[str]:
     if not words:
         return set()
     if len(words) < 3:
-        return {" ".join(words)}
+        # Too short for trigrams; fall back to word unigrams so short headlines
+        # still produce distinct per-word hashes rather than one coarse bucket.
+        return set(words)
     return {
         f"{words[i]} {words[i + 1]} {words[i + 2]}"
         for i in range(len(words) - 2)

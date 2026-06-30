@@ -141,19 +141,60 @@ class MiniLMEmbedder(EmbeddingModel):
         Path(tmp_svd).replace(self._svd_path)
         return sparse_reduced
 
+    # all-mpnet-base-v2 has a hard 384-token limit; texts exceeding it are silently
+    # truncated by the tokenizer. We chunk long inputs and mean-pool the chunks so
+    # no signal is dropped.
+    _MAX_TOKENS: int = 384
+    # ~4 chars/token is a safe upper bound for English prose; keeps chunking cheap.
+    _CHARS_PER_TOKEN: int = 4
+
+    @classmethod
+    def _chunk_text(cls, text: str) -> list[str]:
+        """Split text into chunks that fit within the model's token limit."""
+        char_limit = cls._MAX_TOKENS * cls._CHARS_PER_TOKEN
+        if len(text) <= char_limit:
+            return [text]
+        chunks = []
+        for start in range(0, len(text), char_limit):
+            chunk = text[start : start + char_limit].strip()
+            if chunk:
+                chunks.append(chunk)
+        return chunks or [text[:char_limit]]
+
     def embed(self, texts: list[str]) -> np.ndarray:
         """
         Embed a list of texts. Returns float32 L2-normalized array of shape (N, dimension).
+        Long documents are chunked and their chunk embeddings are mean-pooled before
+        re-normalization, so no tokens are silently dropped.
         """
         if not texts:
             return np.empty((0, self.dimension()), dtype=np.float32)
 
-        dense: np.ndarray = self._model.encode(
-            texts,
+        # Build chunk index: for each input text, record which flat chunk indices belong to it.
+        flat_chunks: list[str] = []
+        doc_chunk_ranges: list[tuple[int, int]] = []
+        for text in texts:
+            chunks = self._chunk_text(text)
+            start = len(flat_chunks)
+            flat_chunks.extend(chunks)
+            doc_chunk_ranges.append((start, len(flat_chunks)))
+
+        flat_dense: np.ndarray = self._model.encode(
+            flat_chunks,
             normalize_embeddings=True,
             convert_to_numpy=True,
             show_progress_bar=False,
-        ).astype(np.float32)  # shape: (N, 768)
+        ).astype(np.float32)
+
+        # Pool chunks back to one vector per document
+        pooled = np.empty((len(texts), flat_dense.shape[1]), dtype=np.float32)
+        for i, (s, e) in enumerate(doc_chunk_ranges):
+            chunk_vecs = flat_dense[s:e]
+            mean_vec = chunk_vecs.mean(axis=0)
+            norm = float(np.linalg.norm(mean_vec))
+            pooled[i] = mean_vec / norm if norm > 0.0 else mean_vec
+
+        dense = pooled  # shape: (N, 768)
 
         if self._mode == "dense":
             return dense

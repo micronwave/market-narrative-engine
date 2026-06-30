@@ -70,25 +70,36 @@ def is_valid_source_url(url: str) -> bool:
 
 _TIER1_FINANCIAL: frozenset[str] = frozenset([
     # Markets & instruments
-    "market", "stock", "share", "equity", "bond", "yield", "etf", "index",
+    "market", "stock", "equity", "bond", "yield", "etf", "index",
     "futures", "options", "derivative", "commodity", "currency", "forex",
-    "crypto", "bitcoin", "coin", "token",
+    "crypto", "bitcoin", "token",
     # Macro & policy
     "economy", "economic", "gdp", "inflation", "recession", "deflation",
-    "interest rate", "federal reserve", "central bank", "fed ", "ecb",
+    "interest rate", "federal reserve", "central bank", "ecb",
     "monetary", "fiscal", "treasury", "deficit", "surplus", "debt",
-    "tariff", "trade", "sanction", "embargo", "export", "import",
+    "tariff", "sanction", "embargo",
     # Corporate
     "earnings", "revenue", "profit", "loss", "ipo", "merger", "acquisition",
     "dividend", "buyback", "valuation", "balance sheet", "cash flow",
-    "bank", "finance", "financial", "investment", "investor", "hedge fund",
+    "finance", "financial", "investment", "investor", "hedge fund",
     "private equity", "venture capital", "startup",
     # Sectors with market-moving potential
-    "oil", "energy", "gas", "pipeline", "opec", "refinery",
-    "semiconductor", "chip", "ai ", "artificial intelligence",
-    "housing", "mortgage", "real estate", "reit",
+    "opec", "refinery",
+    "semiconductor", "artificial intelligence",
+    "mortgage", "real estate", "reit",
     "manufacturing", "supply chain", "logistics",
-    "unemployment", "jobs", "labor", "wage",
+    "unemployment",
+])
+
+# Tokens that are genuine financial terms but also common English words —
+# matched with \b word boundaries to avoid false positives (e.g. "import" in
+# generic text, "share" in "share my thoughts", "coin" in "coin a phrase").
+_TIER1_WORD_BOUNDARY: frozenset[str] = frozenset([
+    "share", "shares", "coin", "coins", "trade", "trades", "trading",
+    "import", "imports", "export", "exports", "bank", "banks", "banking",
+    "oil", "gas", "energy", "chip", "chips", "pipeline",
+    "housing", "jobs", "labor", "wage", "wages",
+    "fed", "ai",
 ])
 
 _TIER2_GEOPOLITICAL: frozenset[str] = frozenset([
@@ -97,17 +108,25 @@ _TIER2_GEOPOLITICAL: frozenset[str] = frozenset([
 ])
 
 # Full set preserved for backward compatibility
-_FINANCIAL_KEYWORDS: frozenset[str] = _TIER1_FINANCIAL | _TIER2_GEOPOLITICAL
+_FINANCIAL_KEYWORDS: frozenset[str] = _TIER1_FINANCIAL | _TIER1_WORD_BOUNDARY | _TIER2_GEOPOLITICAL
+
+_WORD_BOUNDARY_RE = re.compile(
+    r'\b(?:' + '|'.join(re.escape(kw) for kw in sorted(_TIER1_WORD_BOUNDARY, key=len, reverse=True)) + r')\b'
+)
 
 
 def is_financially_relevant(text: str) -> bool:
-    """Return True if the text contains a Tier 1 financial keyword, or a Tier 2
-    keyword co-occurring with a Tier 1 keyword. Tier 2-only articles are rejected."""
+    """Return True if the text contains a Tier 1 financial keyword.
+    Tier 2 geopolitical terms alone are not sufficient — they must appear
+    alongside a Tier 1 term (the combined set is available as _FINANCIAL_KEYWORDS
+    but Tier 2-only articles are rejected by this function).
+    Short ambiguous tokens (share, trade, import, etc.) use word-boundary
+    matching to avoid false positives on common English usage."""
     lower = text.lower()
-    has_tier1 = any(kw in lower for kw in _TIER1_FINANCIAL)
-    if has_tier1:
+    if any(kw in lower for kw in _TIER1_FINANCIAL):
         return True
-    # Tier 2 alone is not enough
+    if _WORD_BOUNDARY_RE.search(lower):
+        return True
     return False
 
 

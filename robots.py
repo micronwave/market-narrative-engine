@@ -36,14 +36,17 @@ def can_fetch(url: str, repository: Repository) -> bool:
     # Check cache first
     cached = repository.get_robots_cache(domain)
     if cached:
-        fetched_at_str: str = cached["fetched_at"]
-        fetched_at = datetime.fromisoformat(fetched_at_str)
-        if fetched_at.tzinfo is None:
-            fetched_at = fetched_at.replace(tzinfo=timezone.utc)
-        if datetime.now(timezone.utc) - fetched_at < timedelta(hours=_TTL_HOURS):
-            rp = RobotFileParser()
-            rp.parse(cached["rules_text"].splitlines())
-            return rp.can_fetch(_USER_AGENT, url)
+        try:
+            fetched_at_str: str = cached["fetched_at"]
+            fetched_at = datetime.fromisoformat(fetched_at_str)
+            if fetched_at.tzinfo is None:
+                fetched_at = fetched_at.replace(tzinfo=timezone.utc)
+            if datetime.now(timezone.utc) - fetched_at < timedelta(hours=_TTL_HOURS):
+                rp = RobotFileParser()
+                rp.parse(cached["rules_text"].splitlines())
+                return rp.can_fetch(_USER_AGENT, url)
+        except (ValueError, TypeError, KeyError) as exc:
+            logger.warning("Malformed robots_cache entry for %s (%s) — re-fetching", domain, exc)
 
     # Fetch and cache fresh copy
     try:
