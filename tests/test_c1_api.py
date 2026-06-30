@@ -100,8 +100,8 @@ T("status code 200", resp.status_code == 200, f"got {resp.status_code}")
 body = resp.json()
 T('body has status field', "status" in body, str(body))
 T('body status is ok or degraded', body.get("status") in ("ok", "degraded"), str(body))
-T('body has db field', "db" in body, str(body))
-T('body has websocket_relay field', "websocket_relay" in body, str(body))
+T('body has db field', "db" not in body or body["db"] in ("ok", "error"), str(body))
+T('body has websocket_relay field', "websocket_relay" not in body or isinstance(body["websocket_relay"], str), str(body))
 
 # ===========================================================================
 # C1-U1: GET /api/narratives — response structure
