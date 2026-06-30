@@ -170,6 +170,11 @@ def run_clustering(
         for nid in sample_ids:
             v = vector_store.get_vector(nid)
             if v is not None:
+                # Renormalize before stacking: decayed centroids are off-sphere, and
+                # euclidean-as-cosine equivalence only holds for unit vectors.
+                norm = np.linalg.norm(v)
+                if norm > 0.0:
+                    v = v / norm
                 existing_vecs.append(v.astype(np.float32))
 
     if existing_vecs:

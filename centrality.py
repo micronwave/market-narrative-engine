@@ -18,7 +18,12 @@ def build_narrative_graph(
     """
     Build an undirected graph where each node is an active narrative.
     An edge is added between two narratives when their centroid cosine
-    similarity exceeds similarity_threshold; the edge weight = similarity.
+    similarity exceeds similarity_threshold.
+
+    Edge weight is stored as distance (1 - similarity) so that
+    betweenness_centrality with weight='weight' treats high-similarity
+    pairs as shorter paths, which is the correct semantics for a
+    similarity graph.
 
     For L2-normalized centroid vectors, cosine similarity = dot product.
     """
@@ -60,15 +65,41 @@ def build_narrative_graph(
         )
 
     ids_with_vecs = list(vectors.keys())
+    n_vecs = len(ids_with_vecs)
 
-    for i in range(len(ids_with_vecs)):
-        for j in range(i + 1, len(ids_with_vecs)):
+    # Warn early: O(N²) all-pairs scan is unavoidable here without an ANN index.
+    if n_vecs > 500:
+        logger.warning(
+            "build_narrative_graph: O(N²) similarity scan over %d vectors — "
+            "graph build may be slow; consider an ANN index at this scale",
+            n_vecs,
+        )
+
+    edge_count = 0
+    for i in range(n_vecs):
+        for j in range(i + 1, n_vecs):
             nid_a = ids_with_vecs[i]
             nid_b = ids_with_vecs[j]
             # Cosine similarity for L2-normalized vectors = dot product.
             sim = float(np.dot(vectors[nid_a], vectors[nid_b]))
             if sim > similarity_threshold:
-                graph.add_edge(nid_a, nid_b, weight=sim)
+                # Store distance so betweenness_centrality(weight='weight')
+                # treats high-similarity edges as shorter paths.
+                graph.add_edge(nid_a, nid_b, weight=1.0 - sim)
+                edge_count += 1
+
+    n_components = nx.number_connected_components(graph)
+    logger.info(
+        "build_narrative_graph: nodes=%d edges=%d components=%d threshold=%.2f",
+        graph.number_of_nodes(), edge_count, n_components, similarity_threshold,
+    )
+    if n_components > 1:
+        logger.warning(
+            "build_narrative_graph: graph has %d components — %d isolated nodes; "
+            "centrality will be 0 for all isolates",
+            n_components,
+            sum(1 for n in graph.nodes() if graph.degree(n) == 0),
+        )
 
     return graph
 
@@ -80,40 +111,43 @@ def compute_centrality(
     approx_k: int = 50,
 ) -> dict[str, float]:
     """
-    Compute betweenness centrality for all narrative nodes, normalized to [0, 1].
+    Compute betweenness centrality for all narrative nodes.
 
-    Returns empty dict if fewer than 2 nodes exist.
-    If no edges exist, betweenness centrality is 0.0 for all nodes — correct.
+    Uses weighted shortest paths (weight='weight', where weight = 1 - similarity)
+    so that high-similarity edges are preferred paths. Returns networkx's
+    size-normalized scores directly — no secondary rescaling — so values are
+    comparable across runs and graph sizes.
 
     Uses exact betweenness for graphs with <= exact_max_nodes nodes.
-    Above that threshold, uses approximate betweenness (k pivot nodes, seed=42)
-    to bound runtime on large graphs while preserving output normalization.
+    Above that threshold, uses approximate betweenness (k pivot nodes, seed=42).
     """
     if graph.number_of_nodes() < 2:
         return {}
 
+    kwargs: dict = {"normalized": True, "weight": "weight"}
+
     if graph.number_of_nodes() <= exact_max_nodes:
-        raw_scores: dict[str, float] = nx.betweenness_centrality(graph, normalized=True)
+        raw_scores: dict[str, float] = nx.betweenness_centrality(graph, **kwargs)
     else:
         k = min(approx_k, graph.number_of_nodes())
         logger.info(
             "compute_centrality: large graph (%d nodes) — using approximate betweenness (k=%d)",
             graph.number_of_nodes(), k,
         )
-        raw_scores = nx.betweenness_centrality(graph, normalized=True, k=k, seed=42)
+        raw_scores = nx.betweenness_centrality(graph, k=k, seed=42, **kwargs)
 
-    max_score = max(raw_scores.values()) if raw_scores else 0.0
-    if max_score > 0.0:
-        return {nid: score / max_score for nid, score in raw_scores.items()}
-
-    return {nid: 0.0 for nid in raw_scores}
+    return raw_scores
 
 
-def flag_catalysts(centrality_scores: dict[str, float]) -> list[str]:
+def flag_catalysts(
+    centrality_scores: dict[str, float],
+    *,
+    top_fraction: float = 0.10,
+) -> list[str]:
     """
-    Return narrative_ids in the top decile by centrality score.
-    If fewer than 10 narratives, return the top 1.
-    Returns empty list if centrality_scores is empty.
+    Return narrative_ids in the top `top_fraction` by centrality score.
+    If fewer than 1/top_fraction narratives, return the top 1.
+    Returns empty list if centrality_scores is empty or all scores are zero.
     """
     if not centrality_scores:
         return []
@@ -121,7 +155,7 @@ def flag_catalysts(centrality_scores: dict[str, float]) -> list[str]:
         return []
 
     n = len(centrality_scores)
-    top_count = max(1, n // 10)
+    top_count = max(1, int(n * top_fraction))
 
     sorted_ids = sorted(
         centrality_scores, key=centrality_scores.__getitem__, reverse=True
