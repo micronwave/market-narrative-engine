@@ -1,7 +1,12 @@
 """Shared sanitization utilities for LLM prompt inputs and chat messages."""
 import re
 
-_CONTROL_CHAR_RE = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]')
+_CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+_INJECTION_PATTERNS = (
+    r"\[(?:SYSTEM|ADMIN|JAILBREAK|HIDDEN)\]",
+    r"\b(?:SYSTEM|ADMIN|IGNORE|OVERRIDE|INJECT|JAILBREAK)\b",
+    r"(?:my instructions|system prompt|tell me your|as an ai|my programming)",
+)
 
 _CHAT_MAX_LENGTH = 2000
 
@@ -14,10 +19,30 @@ _LEAKAGE_PATTERNS = [
 ]
 
 
-def sanitize_for_prompt(text: str, max_len: int = 100) -> str:
+def sanitize_for_prompt(
+    text: str, max_len: int = 2000, preserve_newlines: bool = False
+) -> str:
     """Sanitize text before inserting into an LLM prompt."""
-    text = _CONTROL_CHAR_RE.sub('', text)
-    text = text.replace('\n', ' ').replace('\r', ' ')
+    if not text:
+        return ""
+
+    text = _CONTROL_CHAR_RE.sub("", str(text))
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    if preserve_newlines:
+        text = "\n".join(re.sub(r"[ \t]+", " ", line).strip() for line in text.split("\n"))
+        text = re.sub(r"\n{3,}", "\n\n", text)
+    else:
+        text = re.sub(r"\s+", " ", text)
+
+    for pattern in _INJECTION_PATTERNS:
+        text = re.sub(pattern, "", text, flags=re.IGNORECASE)
+
+    if preserve_newlines:
+        text = "\n".join(re.sub(r"[ \t]+", " ", line).strip() for line in text.split("\n"))
+        text = re.sub(r"\n{3,}", "\n\n", text)
+    else:
+        text = re.sub(r"\s+", " ", text)
+
     if len(text) > max_len:
         text = text[:max_len] + "..."
     return text.strip()
