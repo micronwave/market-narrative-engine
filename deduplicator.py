@@ -42,10 +42,23 @@ class Deduplicator:
             return False
         try:
             loaded = safe_load(str(path), allowed={
-                "builtins": {"dict", "list", "tuple", "set", "str", "int", "float", "bool", "frozenset"},
+                "builtins": {
+                    "dict",
+                    "list",
+                    "tuple",
+                    "set",
+                    "str",
+                    "int",
+                    "float",
+                    "bool",
+                    "frozenset",
+                    "getattr",
+                },
+                "collections": {"defaultdict"},
                 "datasketch.lsh": {"MinHashLSH"},
                 "datasketch.minhash": {"MinHash"},
                 "datasketch.hashfunc": {"sha1_hash32"},
+                "datasketch.storage": {"DictSetStorage", "DictListStorage"},
                 # May need additional datasketch internal classes
             })
             if not isinstance(loaded, MinHashLSH):
@@ -64,17 +77,32 @@ class Deduplicator:
             logger.warning(
                 "LSH index unusable at %s (%s) — reinitializing", self._lsh_path, exc
             )
-            path.unlink(missing_ok=True)
+            try:
+                path.unlink(missing_ok=True)
+            except PermissionError as unlink_exc:
+                logger.warning(
+                    "Unable to delete stale LSH index at %s (%s); continuing with in-memory index",
+                    self._lsh_path,
+                    unlink_exc,
+                )
             self._lsh = MinHashLSH(threshold=self._threshold, num_perm=self._num_perm)
             return False
 
     def save(self) -> None:
         """Persist to disk via atomic temp-file rename."""
         tmp = self._lsh_path + ".tmp"
-        with open(tmp, "wb") as f:
-            pickle.dump(self._lsh, f)
-        Path(tmp).replace(self._lsh_path)
-        logger.debug("Saved MinHashLSH to %s", self._lsh_path)
+        try:
+            with open(tmp, "wb") as f:
+                pickle.dump(self._lsh, f)
+            Path(tmp).replace(self._lsh_path)
+            logger.debug("Saved MinHashLSH to %s", self._lsh_path)
+        except PermissionError as exc:
+            logger.warning(
+                "Unable to persist LSH index to %s (%s); keeping in-memory state only for this run",
+                self._lsh_path,
+                exc,
+            )
+            Path(tmp).unlink(missing_ok=True)
 
     # ------------------------------------------------------------------
     # Core operations
