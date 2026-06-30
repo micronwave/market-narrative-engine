@@ -12,6 +12,7 @@ const nextConfig = {
       },
     ];
   },
+  // Frontend stays on :3000 and proxies local /api/* calls to FastAPI on :8000.
   async rewrites() {
     return [
       {

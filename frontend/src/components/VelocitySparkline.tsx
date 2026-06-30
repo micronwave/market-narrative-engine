@@ -1,5 +1,6 @@
 import type { TimeseriesPoint } from "@/lib/api";
 import { COLORS } from "@/lib/colors";
+import { useId } from "react";
 
 type Props = {
   timeseries: TimeseriesPoint[];
@@ -53,6 +54,8 @@ export default function VelocitySparkline({
   className,
   showEndValue = false,
 }: Props) {
+  const gradientId = useId().replace(/:/g, "");
+
   if (!timeseries || timeseries.length < 2) {
     return (
       <div
@@ -90,7 +93,7 @@ export default function VelocitySparkline({
   const firstVal = values[0];
   const isUp = lastVal >= firstVal;
   const stroke = isUp ? COLORS.bullish : COLORS.bearish;
-  const uid = `spark-${Math.random().toString(36).slice(2, 8)}`;
+  const uid = `spark-${gradientId}`;
 
   const lastCoord = coords[coords.length - 1];
 
