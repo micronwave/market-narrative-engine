@@ -7,7 +7,7 @@ Unit:
   F1-U3: compute_lifecycle_stage returns "Mature" when days >= 5, entropy >= 1.2, docs >= 15
   F1-U4: compute_lifecycle_stage returns "Declining" when consecutive_declining >= 30 (or >= 18 with velocity < 0.008)
   F1-U5: compute_lifecycle_stage returns "Dormant" when declining >= 42 and velocity < 0.01
-  F1-U6: Revival — Declining + velocity > 0.10 returns "Growing"
+  F1-U6: Revival — Declining >0.10 -> Growing, Dormant >0.25 -> Emerging
   F1-U7: Cannot skip stages — Emerging with high entropy still returns "Growing" not "Mature"
   F1-U8: GET /api/narratives includes "stage" field in response
 """
@@ -80,7 +80,7 @@ result3 = compute_lifecycle_stage(
 T("stays Emerging with low doc count", result3 == "Emerging", f"got {result3}")
 
 # ===========================================================================
-# F1-U3: Mature when days >= 5, entropy >= 1.2, docs >= 15
+# F1-U3: Mature when days >= 5, entropy >= 1.5, docs >= 15
 # ===========================================================================
 S("F1-U3: Growing → Mature")
 result = compute_lifecycle_stage(
@@ -96,6 +96,35 @@ result2 = compute_lifecycle_stage(
     entropy=1.0, consecutive_declining_cycles=0, days_since_creation=7,
 )
 T("stays Growing with low entropy", result2 == "Growing", f"got {result2}")
+
+# Boundary checks for updated gate (1.2) and volume fallback (30 docs)
+result3 = compute_lifecycle_stage(
+    current_stage="Growing", document_count=20, velocity_windowed=0.05,
+    entropy=1.3, consecutive_declining_cycles=0, days_since_creation=7,
+    cycles_in_current_stage=3,
+)
+T("entropy=1.3 -> Mature (above new 1.2 gate)", result3 == "Mature", f"got {result3}")
+
+result4 = compute_lifecycle_stage(
+    current_stage="Growing", document_count=20, velocity_windowed=0.05,
+    entropy=1.1, consecutive_declining_cycles=0, days_since_creation=7,
+    cycles_in_current_stage=3,
+)
+T("entropy=1.1 -> Growing (below new 1.2 gate)", result4 == "Growing", f"got {result4}")
+
+result5 = compute_lifecycle_stage(
+    current_stage="Growing", document_count=30, velocity_windowed=0.05,
+    entropy=None, consecutive_declining_cycles=0, days_since_creation=8,
+    cycles_in_current_stage=3,
+)
+T("doc=30,days=8,entropy=None -> Mature (volume fallback)", result5 == "Mature", f"got {result5}")
+
+result6 = compute_lifecycle_stage(
+    current_stage="Growing", document_count=29, velocity_windowed=0.05,
+    entropy=None, consecutive_declining_cycles=0, days_since_creation=8,
+    cycles_in_current_stage=3,
+)
+T("doc=29,days=8,entropy=None -> Growing (below volume fallback)", result6 == "Growing", f"got {result6}")
 
 # ===========================================================================
 # F1-U4: Declining when consecutive_declining >= 30 (or >= 18 with low velocity)
@@ -134,7 +163,7 @@ result2 = compute_lifecycle_stage(
 T("stays Declining with higher velocity", result2 == "Declining", f"got {result2}")
 
 # ===========================================================================
-# F1-U6: Revival — Declining + velocity > 0.10 → Growing
+# F1-U6: Revival thresholds
 # ===========================================================================
 S("F1-U6: Revival")
 result = compute_lifecycle_stage(
@@ -147,7 +176,13 @@ result2 = compute_lifecycle_stage(
     current_stage="Dormant", document_count=20, velocity_windowed=0.12,
     entropy=2.0, consecutive_declining_cycles=10, days_since_creation=30,
 )
-T("Dormant revives to Growing", result2 == "Growing", f"got {result2}")
+T("Dormant stays Dormant below 0.25 revival threshold", result2 == "Dormant", f"got {result2}")
+
+result3 = compute_lifecycle_stage(
+    current_stage="Dormant", document_count=20, velocity_windowed=0.30,
+    entropy=2.0, consecutive_declining_cycles=10, days_since_creation=30,
+)
+T("Dormant revives to Emerging above 0.25 threshold", result3 == "Emerging", f"got {result3}")
 
 # ===========================================================================
 # F1-U7: Cannot skip stages

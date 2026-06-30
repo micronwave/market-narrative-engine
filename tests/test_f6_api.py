@@ -11,6 +11,7 @@ Unit:
 
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 _API_DIR = str(Path(__file__).parent.parent / "api")
 if _API_DIR not in sys.path:
@@ -97,18 +98,17 @@ T("interpretation mentions insufficient or collecting",
 # ===========================================================================
 S("F6-U4: GET /api/correlation endpoint")
 with TestClient(app) as client:
-    narratives = client.get("/api/narratives").json()
-    if narratives:
-        nid = narratives[0]["id"]
+    # Avoid the expensive /api/narratives scan in this suite while still
+    # verifying the correlation endpoint contract.
+    nid = "f6-test-narrative"
+    with patch("stock_data.get_price_history", return_value=PRICE_HIST):
         resp = client.get(f"/api/correlations/{nid}/TSM?lead_days=1")
-        T("status 200", resp.status_code == 200, f"status={resp.status_code}")
-        data = resp.json()
-        T("has narrative_id", "narrative_id" in data, f"keys={list(data.keys())}")
-        T("has ticker", "ticker" in data)
-        T("has correlation", "correlation" in data)
-        T("ticker is TSM", data.get("ticker") == "TSM", f"ticker={data.get('ticker')}")
-    else:
-        T("has narratives", False, "no narratives")
+    T("status 200", resp.status_code == 200, f"status={resp.status_code}")
+    data = resp.json()
+    T("has narrative_id", "narrative_id" in data, f"keys={list(data.keys())}")
+    T("has ticker", "ticker" in data)
+    T("has correlation", "correlation" in data)
+    T("ticker is TSM", data.get("ticker") == "TSM", f"ticker={data.get('ticker')}")
 
 # ===========================================================================
 # F6-U5: Interpretation matches correlation magnitude

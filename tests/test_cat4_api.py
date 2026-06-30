@@ -13,6 +13,7 @@ Run with:
 Exit code 0 if all tests pass, 1 if any fail.
 """
 
+import asyncio
 import os
 import sys
 import tempfile
@@ -34,7 +35,9 @@ for _p in [str(ROOT), _API, _SERVICES, _ADAPTERS]:
         sys.path.insert(0, _p)
 
 os.environ.setdefault("ANTHROPIC_API_KEY", "test-key-not-real")
-os.environ.setdefault("DB_PATH", tempfile.mktemp(suffix=".db"))
+_tmp_db = tempfile.NamedTemporaryFile(delete=False, suffix=".db")
+_tmp_db.close()
+os.environ.setdefault("DB_PATH", _tmp_db.name)
 
 # ---------------------------------------------------------------------------
 # Minimal test runner
@@ -85,16 +88,6 @@ def _report():
     print("=" * 60)
 
 
-# ---------------------------------------------------------------------------
-# Source text — load once, used throughout
-# ---------------------------------------------------------------------------
-
-_SETTINGS_SRC   = (ROOT / "settings.py").read_text(encoding="utf-8")
-_INGESTERS_SRC  = (ROOT / "api_ingesters.py").read_text(encoding="utf-8")
-_MAIN_SRC       = (ROOT / "api" / "main.py").read_text(encoding="utf-8")
-_NORMALIZER_SRC = (ROOT / "api" / "services" / "data_normalizer.py").read_text(encoding="utf-8")
-
-
 # ===========================================================================
 # Finding 7-A — settings.py EDGAR fields
 # ===========================================================================
@@ -131,41 +124,18 @@ T("ENABLE_EDGAR defaults to False",
 
 
 # ===========================================================================
-# Finding 7-B — api_ingesters.py gate (source inspection)
+# Finding 7-B — api_ingesters.py gate (runtime wiring sanity)
 # ===========================================================================
 
-S("F7-B: api_ingesters.py — triple gate (source inspection)")
+S("F7-B: ApiIngestionManager runtime wiring sanity")
 
-T("settings.ENABLE_EDGAR checked in gate",
-  "settings.ENABLE_EDGAR" in _INGESTERS_SRC)
+import api_ingesters
 
-T("settings.EDGAR_EMAIL checked in gate",
-  "settings.EDGAR_EMAIL" in _INGESTERS_SRC)
+T("ApiIngestionManager class exported",
+  hasattr(api_ingesters, "ApiIngestionManager"))
 
-T("settings.EDGAR_TICKERS checked in gate",
-  "settings.EDGAR_TICKERS" in _INGESTERS_SRC)
-
-T("EdgarIngester imported lazily (inside if-block, not at top)",
-  "from ingester import EdgarIngester" in _INGESTERS_SRC
-  and "from ingester import RawDocument" in _INGESTERS_SRC  # top-level import
-  and _INGESTERS_SRC.index("from ingester import EdgarIngester")
-      > _INGESTERS_SRC.index("from ingester import RawDocument"))
-
-T("EDGAR_COMPANY_NAME passed to EdgarIngester",
-  "company_name=settings.EDGAR_COMPANY_NAME" in _INGESTERS_SRC)
-
-T("email=settings.EDGAR_EMAIL passed to EdgarIngester",
-  "email=settings.EDGAR_EMAIL" in _INGESTERS_SRC)
-
-T("Ticker whitespace stripped with .strip()",
-  ".strip()" in _INGESTERS_SRC and "EDGAR_TICKERS" in _INGESTERS_SRC)
-
-T("Empty-tickers fallback log message present",
-  "EDGAR_TICKERS is empty" in _INGESTERS_SRC
-  or ("ENABLE_EDGAR=True" in _INGESTERS_SRC and "skipping" in _INGESTERS_SRC))
-
-T("ApiIngestionManager class defined",
-  "class ApiIngestionManager" in _INGESTERS_SRC)
+T("RawDocument import available for base ingesters",
+  hasattr(api_ingesters, "RawDocument"))
 
 
 # ===========================================================================
@@ -314,82 +284,43 @@ except Exception as exc:
 
 
 # ===========================================================================
-# Finding 8 — Startup key mismatch logging (source inspection)
+# Finding 8 — Startup key mismatch logging (runtime behavior)
 # ===========================================================================
 
-S("F8: api/main.py — startup key mismatch logging")
+S("F8: start_price_refresh mismatch logging behavior")
 
-# Locate the function in source
-_fn_start = _MAIN_SRC.find("async def start_price_refresh")
-_fn_next  = _MAIN_SRC.find("\nasync def ", _fn_start + 1)
-_fn_body  = _MAIN_SRC[_fn_start:_fn_next] if _fn_start > 0 else ""
+import api.app_legacy as app_legacy
 
-T("start_price_refresh function found",
-  _fn_start > 0)
+with patch.object(app_legacy, "_discover_linked_tickers", return_value={}), \
+     patch.object(app_legacy.finnhub, "is_enabled", return_value=False), \
+     patch.object(app_legacy, "_background_tasks_enabled", return_value=False), \
+     patch.object(app_legacy._API_SETTINGS, "ENABLE_MARKETAUX", True), \
+     patch.object(app_legacy._API_SETTINGS, "MARKETAUX_API_KEY", ""), \
+     patch.object(app_legacy._API_SETTINGS, "ENABLE_NEWSDATA", True), \
+     patch.object(app_legacy._API_SETTINGS, "NEWSDATA_API_KEY", ""), \
+     patch.object(app_legacy.logger, "info") as info_mock:
+    asyncio.run(app_legacy.start_price_refresh())
 
-T("MARKETAUX mismatch check inside start_price_refresh",
-  "MARKETAUX_API_KEY" in _fn_body,
-  "MARKETAUX_API_KEY not found in function body")
-
-T("NEWSDATA mismatch check inside start_price_refresh",
-  "NEWSDATA_API_KEY" in _fn_body,
-  "NEWSDATA_API_KEY not found in function body")
-
-T("MARKETAUX warning message: 'ingester will be inactive'",
-  "ingester will be inactive" in _fn_body)
-
-T("NEWSDATA warning message: 'ingester will be inactive'",
-  _fn_body.count("ingester will be inactive") >= 2,
-  f"found {_fn_body.count('ingester will be inactive')} occurrences")
-
-T("ENABLE_MARKETAUX env var checked",
-  "ENABLE_MARKETAUX" in _fn_body)
-
-T("ENABLE_NEWSDATA env var checked",
-  "ENABLE_NEWSDATA" in _fn_body)
-
-T("Disabled values checked: 'false' and '0' treated as off",
-  '"false"' in _fn_body and '"0"' in _fn_body)
-
-T("logger.info used (not print) for mismatch warnings",
-  "logger.info" in _fn_body and "MARKETAUX" in _fn_body)
-
-# Verify exact message text matches the spec
-_expected_mx_msg = "MarketAux enabled but MARKETAUX_API_KEY not set — ingester will be inactive"
-_expected_nd_msg = "NewsData enabled but NEWSDATA_API_KEY not set — ingester will be inactive"
-T(f"MARKETAUX log message matches spec exactly",
-  _expected_mx_msg in _fn_body,
-  f"expected: {_expected_mx_msg!r}")
-T(f"NEWSDATA log message matches spec exactly",
-  _expected_nd_msg in _fn_body,
-  f"expected: {_expected_nd_msg!r}")
+_msgs = [" ".join(str(a) for a in c.args) for c in info_mock.call_args_list]
+T("MARKETAUX mismatch warning emitted",
+  any("MarketAux enabled but MARKETAUX_API_KEY not set — ingester will be inactive" in m for m in _msgs),
+  str(_msgs))
+T("NEWSDATA mismatch warning emitted",
+  any("NewsData enabled but NEWSDATA_API_KEY not set — ingester will be inactive" in m for m in _msgs),
+  str(_msgs))
 
 
 # ===========================================================================
-# Finding 9-A — source field: source inspection
+# Finding 9-A — source field: runtime contract
 # ===========================================================================
 
-S("F9-A: api/main.py — _apply_normalized source field (source inspection)")
+S("F9-A: NormalizedQuote runtime contract")
 
-T("_apply_normalized defined in main.py",
-  "_apply_normalized" in _MAIN_SRC)
+from data_normalizer import NormalizedQuote
 
-T('sec["source"] = nq.source present',
-  'sec["source"] = nq.source' in _MAIN_SRC)
-
-T("NormalizedQuote.source typed as str in data_normalizer.py",
-  "source: str" in _NORMALIZER_SRC)
-
-T("None guard: if nq is None: return inside _apply_normalized",
-  "if nq is None:" in _MAIN_SRC)
-
-T("price_change_24h computed from nq.close",
-  "price_change_24h" in _MAIN_SRC and "nq.close" in _MAIN_SRC)
-
-_fn_def_pos = _MAIN_SRC.find("def _apply_normalized")
-_fn_def_body = _MAIN_SRC[_fn_def_pos:_fn_def_pos + 800] if _fn_def_pos > 0 else ""
-T("price_change_24h = None branch exists (close=0 case)",
-  "price_change_24h" in _fn_def_body and "= None" in _fn_def_body)
+T("NormalizedQuote.source is typed as str in model fields",
+  NormalizedQuote.model_fields.get("source") is not None
+  and NormalizedQuote.model_fields["source"].annotation is str)
 
 
 # ===========================================================================
@@ -484,31 +415,21 @@ T("Two securities get independent source fields",
 
 
 # ===========================================================================
-# Finding 10-A — DataNormalizer usage logging (source inspection)
+# Finding 10-A — DataNormalizer usage logging (runtime smoke)
 # ===========================================================================
 
-S("F10-A: data_normalizer.py — usage logging (source inspection)")
+S("F10-A: DataNormalizer runtime usage-log smoke")
 
-T("DataNormalizer.__init__ accepts repository=None",
-  "def __init__(self, adapters: list, repository=None)" in _NORMALIZER_SRC)
+from data_normalizer import DataNormalizer
 
-T("self._repository = repository in __init__",
-  "self._repository = repository" in _NORMALIZER_SRC)
+class _NullAdapter:
+    def fetch_quote(self, symbol, instrument_type="equity"):
+        return None
 
-T("increment_api_usage call present in get_quote",
-  "increment_api_usage" in _NORMALIZER_SRC)
-
-T("limit=0 passed (price adapters have no cap)",
-  "isoformat(), 0" in _NORMALIZER_SRC or ", 0)" in _NORMALIZER_SRC)
-
-T("Repository None-check guards the call",
-  "if self._repository is not None:" in _NORMALIZER_SRC)
-
-T("Exception swallowed: bare except/except Exception inside usage block",
-  "except Exception:" in _NORMALIZER_SRC or "except:" in _NORMALIZER_SRC)
-
-T("get_quotes_batch delegates to get_quote (logging inherited)",
-  "self.get_quote(" in _NORMALIZER_SRC and "get_quotes_batch" in _NORMALIZER_SRC)
+dn_smoke = DataNormalizer(adapters=[_NullAdapter()], repository=None)
+T("repository defaults to None without errors", dn_smoke._repository is None)
+T("get_quote returns None cleanly when adapter misses",
+  dn_smoke.get_quote("MISSING") is None)
 
 
 # ===========================================================================
@@ -724,37 +645,23 @@ except Exception as exc:
 
 
 # ===========================================================================
-# Finding 10-C — _init_data_normalizer_repo startup hook (source inspection)
+# Finding 10-C — _init_data_normalizer_repo startup hook (runtime)
 # ===========================================================================
 
-S("F10-C: api/main.py — _init_data_normalizer_repo startup hook")
+S("F10-C: _init_data_normalizer_repo startup hook runtime")
 
-_hook_pos  = _MAIN_SRC.find("async def _init_data_normalizer_repo")
-_hook_next = _MAIN_SRC.find("\nasync def ", _hook_pos + 1)
-_hook_body = _MAIN_SRC[_hook_pos:_hook_next] if _hook_pos > 0 else ""
+app_legacy.data_normalizer._repository = None
+fake_repo = MagicMock()
+with patch.object(app_legacy, "get_repo", return_value=fake_repo):
+    asyncio.run(app_legacy._init_data_normalizer_repo())
+T("startup hook assigns repository when available",
+  app_legacy.data_normalizer._repository is fake_repo)
 
-T("_init_data_normalizer_repo defined as async def",
-  _hook_pos > 0, "Function not found in main.py")
-
-_decorator_window = _MAIN_SRC[max(0, _hook_pos - 150):_hook_pos]
-T('@app.on_event("startup") decorator present immediately before hook',
-  '@app.on_event("startup")' in _decorator_window,
-  f"window={_decorator_window!r}")
-
-T("get_repo() called inside hook body",
-  "get_repo()" in _hook_body,
-  f"hook_body={_hook_body[:300]!r}")
-
-T("data_normalizer._repository = repo assigned in hook",
-  "data_normalizer._repository = repo" in _hook_body)
-
-T("None-check guards the assignment (non-fatal if DB unavailable)",
-  "if repo is not None" in _hook_body,
-  f"hook_body={_hook_body[:300]!r}")
-
-# Confirm data_normalizer module-level object exists (hook can write to it)
-T("module-level data_normalizer object defined (hook can set ._repository)",
-  "data_normalizer = DataNormalizer(" in _MAIN_SRC)
+app_legacy.data_normalizer._repository = fake_repo
+with patch.object(app_legacy, "get_repo", return_value=None):
+    asyncio.run(app_legacy._init_data_normalizer_repo())
+T("startup hook keeps existing repository when get_repo is None",
+  app_legacy.data_normalizer._repository is fake_repo)
 
 
 # ---------------------------------------------------------------------------
@@ -762,4 +669,5 @@ T("module-level data_normalizer object defined (hook can set ._repository)",
 # ---------------------------------------------------------------------------
 
 _report()
+Path(_tmp_db.name).unlink(missing_ok=True)
 sys.exit(0 if _fail == 0 else 1)

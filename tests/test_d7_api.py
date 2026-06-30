@@ -116,10 +116,11 @@ relay.update_symbols(["AAPL", "MSFT", "GOOG", "NVDA", "TSM", "EXTRA1", "EXTRA2"]
 # Not connected, so active symbols should be empty
 T("active symbols empty when disconnected",
   len(relay.get_active_symbols()) == 0)
-# But the _subscribed set should be capped at symbols_limit (5)
-T("subscribed set capped at limit",
-  len(relay._subscribed) == 5,
-  f"got {len(relay._subscribed)}")
+# Desired symbols should be capped at symbols_limit (5) even before connect.
+_desired = relay._pending_desired if hasattr(relay, "_pending_desired") else relay._subscribed
+T("desired symbols capped at limit",
+  len(_desired) == 5,
+  f"got {len(_desired)}")
 
 # Test _handle_message — parse Finnhub trade format
 trade_msg = json.dumps({

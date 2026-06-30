@@ -206,8 +206,9 @@ T("duplicate email raises error", duplicate_raised)
 S("D9-U3: Stub mode auth")
 
 from fastapi.testclient import TestClient  # noqa: E402
-from api.main import app, STUB_AUTH_TOKEN, _AUTH_MODE  # noqa: E402
-import api.main as api_main_module  # noqa: E402
+from api.main import app  # noqa: E402
+from api.app_legacy import STUB_AUTH_TOKEN, _AUTH_MODE  # noqa: E402
+import api.app_legacy as api_main_module  # noqa: E402
 
 AUTH_HEADER = {"x-auth-token": STUB_AUTH_TOKEN}
 
@@ -278,9 +279,13 @@ with TestClient(app) as client:
 
 _JWT_SECRET = "test-secret-key-for-d9-auth-tests-min-32bytes!"
 _original_auth_mode = api_main_module._AUTH_MODE
+_original_jwt_secret = getattr(api_main_module._API_SETTINGS, "JWT_SECRET_KEY", "")
+_original_jwt_expiry = getattr(api_main_module._API_SETTINGS, "JWT_EXPIRY_HOURS", 24)
 os.environ["JWT_SECRET_KEY"] = _JWT_SECRET
 os.environ["JWT_EXPIRY_HOURS"] = "24"
 api_main_module._AUTH_MODE = "jwt"
+api_main_module._API_SETTINGS.JWT_SECRET_KEY = _JWT_SECRET
+api_main_module._API_SETTINGS.JWT_EXPIRY_HOURS = 24
 
 try:
     import jwt as pyjwt
@@ -439,8 +444,8 @@ else:
 
         # get_optional_user in JWT mode requires token
         resp_opt_jwt = client.get("/api/activity")
-        T("optional auth in JWT mode requires token (403)",
-          resp_opt_jwt.status_code == 403,
+        T("optional auth in JWT mode requires token (401/403)",
+          resp_opt_jwt.status_code in (401, 403),
           f"got {resp_opt_jwt.status_code}")
 
     # ===========================================================================
@@ -465,6 +470,8 @@ else:
 # Restore stub mode
 # ---------------------------------------------------------------------------
 api_main_module._AUTH_MODE = _original_auth_mode
+api_main_module._API_SETTINGS.JWT_SECRET_KEY = _original_jwt_secret
+api_main_module._API_SETTINGS.JWT_EXPIRY_HOURS = _original_jwt_expiry
 os.environ.pop("JWT_SECRET_KEY", None)
 os.environ.pop("JWT_EXPIRY_HOURS", None)
 

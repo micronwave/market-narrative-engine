@@ -8,7 +8,7 @@ Section 1: compute_directional_impact (4 tests)
   SP6-CDI-4: time_horizon maps correctly: "immediate"->"1-3d", "near_term"->"1-2w", "long_term"->"1-3m"
 
 Section 2: enrich_linked_assets (3 tests)
-  SP6-ELA-1: preserves original ticker, asset_name, similarity_score keys
+  SP6-ELA-1: preserves original ticker, asset_name, similarity_score, source keys
   SP6-ELA-2: adds direction, impact_score, confidence, time_horizon, signal_components
   SP6-ELA-3: returns list sorted by impact_score DESC
 
@@ -59,9 +59,14 @@ def T(name: str, condition: bool, details: str = ""):
     print(msg)
 
 
+_tmp_db_paths: list[str] = []
+
+
 def _make_repo() -> SqliteRepository:
-    tmp = tempfile.mktemp(suffix=".db")
-    repo = SqliteRepository(tmp)
+    f = tempfile.NamedTemporaryFile(delete=False, suffix=".db")
+    f.close()
+    _tmp_db_paths.append(f.name)
+    repo = SqliteRepository(f.name)
     repo.migrate()
     return repo
 
@@ -190,19 +195,19 @@ mock_repo.get_ticker_convergence.return_value = {
 }
 
 raw_assets = [
-    {"ticker": "AAPL", "asset_name": "Apple Inc", "similarity_score": 0.85},
+    {"ticker": "AAPL", "asset_name": "Apple Inc", "similarity_score": 0.85, "source": "similarity"},
     {"ticker": "MSFT", "asset_name": "Microsoft Corp", "similarity_score": 0.72},
-    {"ticker": "NVDA", "asset_name": "NVIDIA Corp", "similarity_score": 0.68},
+    {"ticker": "NVDA", "asset_name": "NVIDIA Corp", "similarity_score": 0.68, "source": "text_mention"},
 ]
 
 enriched = enrich_linked_assets("n-enrich", raw_assets, mock_repo)
 
 # SP6-ELA-1: preserves original keys
-T("SP6-ELA-1: preserves ticker, asset_name, similarity_score",
+T("SP6-ELA-1: preserves ticker, asset_name, similarity_score, source",
   all(
-      "ticker" in a and "asset_name" in a and "similarity_score" in a
+      "ticker" in a and "asset_name" in a and "similarity_score" in a and "source" in a
       for a in enriched
-  ) and len(enriched) == 3,
+  ) and len(enriched) == 3 and enriched[-1]["source"] == "text_mention",
   f"count={len(enriched)}, keys={list(enriched[0].keys()) if enriched else []}")
 
 # SP6-ELA-2: adds new keys
@@ -368,6 +373,8 @@ print("\n" + "=" * 60)
 passed = sum(1 for _, ok in _results if ok)
 total = len(_results)
 print(f"Phase 6 — Directional Impact: {passed}/{total} passed")
+for _tp in _tmp_db_paths:
+    Path(_tp).unlink(missing_ok=True)
 if passed < total:
     print("FAILED:")
     for name, ok in _results:

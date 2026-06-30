@@ -68,7 +68,7 @@ def T(name: str, condition: bool, details: str = "") -> None:
 # Source texts (read once, reused across sections)
 # ---------------------------------------------------------------------------
 
-_main_src = (ROOT / "api" / "main.py").read_text(encoding="utf-8")
+_main_src = (ROOT / "api" / "app_legacy.py").read_text(encoding="utf-8")
 _repo_src = (ROOT / "repository.py").read_text(encoding="utf-8")
 
 
@@ -268,8 +268,8 @@ T("signup passes email_verified=0 to create_user",
 T("signup passes verification_token to create_user",
   '"verification_token": verification_token' in _main_src)
 
-T("signup logs verification URL to console",
-  "/api/auth/verify?token=" in _main_src)
+T("signup does not log verification URL/token",
+  "/api/auth/verify?token=" not in _main_src)
 
 T("GET /api/auth/verify endpoint defined",
   '@app.get("/api/auth/verify")' in _main_src)

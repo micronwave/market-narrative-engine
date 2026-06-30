@@ -24,6 +24,7 @@ if _PROJECT_ROOT not in sys.path:
 
 from fastapi.testclient import TestClient  # noqa: E402
 from api.main import app  # noqa: E402
+from signals import compute_lifecycle_stage  # noqa: E402
 
 STUB_TOKEN = "stub-auth-token"
 
@@ -192,6 +193,53 @@ S("D4-U10: GET /api/subscription removed")
 with TestClient(app) as client:
     resp = client.get("/api/subscription", headers={"x-auth-token": STUB_TOKEN})
     T("status 404", resp.status_code == 404, f"status={resp.status_code}")
+
+# ===========================================================================
+# D4-U11: Lifecycle Dormant revival threshold path
+# ===========================================================================
+S("D4-U11: Lifecycle Dormant revival threshold")
+
+stays_dormant = compute_lifecycle_stage(
+    current_stage="Dormant",
+    document_count=20,
+    velocity_windowed=0.15,
+    entropy=1.5,
+    consecutive_declining_cycles=10,
+    days_since_creation=30,
+    cycles_in_current_stage=10,
+)
+T("Dormant remains Dormant at small velocity bump", stays_dormant == "Dormant", f"got {stays_dormant}")
+
+revives = compute_lifecycle_stage(
+    current_stage="Dormant",
+    document_count=20,
+    velocity_windowed=0.30,
+    entropy=1.5,
+    consecutive_declining_cycles=10,
+    days_since_creation=30,
+    cycles_in_current_stage=10,
+)
+T("Dormant revives to Emerging above threshold", revives == "Emerging", f"got {revives}")
+
+# ===========================================================================
+# D4-U12: Growing narratives with NULL entropy are not stuck forever
+# ===========================================================================
+S("D4-U12: Lifecycle NULL entropy handling")
+
+growing_with_null_entropy = compute_lifecycle_stage(
+    current_stage="Growing",
+    document_count=120,
+    velocity_windowed=0.03,
+    entropy=None,
+    consecutive_declining_cycles=0,
+    days_since_creation=8,
+    cycles_in_current_stage=5,
+)
+T(
+    "Growing can advance to Mature with high document volume when entropy is NULL",
+    growing_with_null_entropy == "Mature",
+    f"got {growing_with_null_entropy}",
+)
 
 # ===========================================================================
 # Summary

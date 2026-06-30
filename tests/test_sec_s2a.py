@@ -82,8 +82,8 @@ def _print_summary() -> None:
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from fastapi.testclient import TestClient  # noqa: E402
-from api.main import (  # noqa: E402
-    app,
+from api.main import app  # noqa: E402
+from api.app_legacy import (  # noqa: E402
     get_optional_user,
     get_current_user,
     STUB_AUTH_TOKEN,
@@ -95,7 +95,7 @@ client = TestClient(app)
 STUB_HEADER = {"x-auth-token": STUB_AUTH_TOKEN}
 
 # ---------------------------------------------------------------------------
-# All protected endpoints that should now require get_optional_user
+# All 38 endpoints that should now require get_optional_user
 # ---------------------------------------------------------------------------
 
 # (method, path, needs_db) — needs_db=True means the endpoint calls get_repo()
@@ -112,6 +112,7 @@ PROTECTED_ENDPOINTS = [
     ("GET", "/api/signals", True),
     ("GET", "/api/stocks", False),
     ("GET", "/api/stocks/AAPL", False),
+    ("GET", "/api/alerts/types", False),
     ("GET", "/api/manipulation", True),
     ("GET", "/api/narratives/test-id-000/manipulation", True),
     ("GET", "/api/brief/AAPL", False),
@@ -198,7 +199,7 @@ for method, path in PUBLIC_ENDPOINTS:
 S("C5: Phantom x_auth_token cleanup")
 
 # Find the get_narratives endpoint function
-from api.main import get_narratives  # noqa: E402
+from api.app_legacy import get_narratives  # noqa: E402
 
 sig = inspect.signature(get_narratives)
 param_names = list(sig.parameters.keys())
@@ -224,7 +225,7 @@ T(
 )
 
 # ===========================================================================
-# Section 4: Protected endpoints have get_optional_user dependency
+# Section 4: All 38 endpoints have get_optional_user dependency
 # ===========================================================================
 S("C5: Endpoint signatures include user param")
 
@@ -248,6 +249,7 @@ _ROUTE_PATTERNS = [
     "/api/signals",
     "/api/stocks",
     "/api/stocks/{symbol}",
+    "/api/alerts/types",
     "/api/manipulation",
     "/api/narratives/{narrative_id}/manipulation",
     "/api/brief/{ticker}",
@@ -295,7 +297,7 @@ for route_path in _ROUTE_PATTERNS:
 S("C5: JWT mode rejects unauthenticated")
 
 # Temporarily switch to JWT mode
-import api.main as _main_mod  # noqa: E402
+import api.app_legacy as _main_mod  # noqa: E402
 
 _saved_auth_mode = _main_mod._AUTH_MODE
 _main_mod._AUTH_MODE = "jwt"
@@ -325,6 +327,10 @@ S("C5: Pre-existing auth endpoints unchanged")
 # These endpoints already had get_optional_user or get_current_user
 _PREEXISTING_AUTH = [
     ("GET", "/api/activity"),
+    ("GET", "/api/watchlist"),
+    ("GET", "/api/alerts/rules"),
+    ("GET", "/api/alerts"),
+    ("GET", "/api/alerts/count"),
     ("GET", "/api/portfolio"),
     ("GET", "/api/portfolio/exposure"),
 ]

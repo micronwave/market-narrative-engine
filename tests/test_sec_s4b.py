@@ -237,7 +237,7 @@ T("safe_load has 'allowed' parameter",
 
 S("L4 — FastAPI Path import")
 
-_main_source = (ROOT / "api" / "main.py").read_text(encoding="utf-8")
+_main_source = (ROOT / "api" / "app_legacy.py").read_text(encoding="utf-8")
 
 T("Path imported as FPath from fastapi",
   "from fastapi import" in _main_source and "Path as FPath" in _main_source)
@@ -311,6 +311,10 @@ for _fn, _var in [
 S("L4 — other ID endpoints have max_length=50")
 
 _OTHER_ID_FUNCS = [
+    "def remove_from_watchlist(",
+    "def delete_alert_rule(",
+    "def toggle_alert_rule(",
+    "def mark_alert_read(",
     "def remove_holding(",
 ]
 for _fn in _OTHER_ID_FUNCS:

@@ -70,13 +70,13 @@ result = compute_lifecycle_stage(
 )
 T("T2: Mature → Declining when cycles >= 3", result == "Declining", f"got {result}")
 
-S("Fix 1: Stage hysteresis — Dormant→Growing bypasses hysteresis")
+S("Fix 1: Stage hysteresis — Dormant revival has higher threshold")
 result = compute_lifecycle_stage(
     current_stage="Dormant", document_count=5, velocity_windowed=0.15,
     entropy=None, consecutive_declining_cycles=20, days_since_creation=60,
     cycles_in_current_stage=0,
 )
-T("T3: Revival allowed immediately (cycles=0)", result == "Growing", f"got {result}")
+T("T3: Dormant remains Dormant below 0.25", result == "Dormant", f"got {result}")
 
 S("Fix 1: Stage hysteresis — Mature→Declining thresholds")
 # velocity at 0.015 — below the old 0.02 threshold, but above the recalibrated cutoff
@@ -109,8 +109,8 @@ T("T5: cycles_in_current_stage column exists", "cycles_in_current_stage" in _col
 S("Fix 2: Sonnet escalation threshold")
 from settings import Settings
 _settings = Settings()
-T("T6: CONFIDENCE_ESCALATION_THRESHOLD is 0.35",
-  _settings.CONFIDENCE_ESCALATION_THRESHOLD == 0.35,
+T("T6: CONFIDENCE_ESCALATION_THRESHOLD is 0.50",
+  _settings.CONFIDENCE_ESCALATION_THRESHOLD == 0.50,
   f"got {_settings.CONFIDENCE_ESCALATION_THRESHOLD}")
 
 # ===========================================================================
@@ -167,8 +167,8 @@ except ImportError as e:
 # ===========================================================================
 S("Fix 4: LLM pricing constants")
 from llm_client import HAIKU_INPUT_PRICE_PER_M
-T("T13: Haiku input pricing is $0.80/M",
-  HAIKU_INPUT_PRICE_PER_M == 0.80,
+T("T13: Haiku input pricing is $1.00/M",
+  HAIKU_INPUT_PRICE_PER_M == 1.00,
   f"got {HAIKU_INPUT_PRICE_PER_M}")
 
 # ===========================================================================

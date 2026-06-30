@@ -5,8 +5,8 @@ Section A: Stage transition fallback paths
   T1: Emerging -> Growing via age+doc fallback (doc>=10, age>=2, cycles>=3)
   T2: Emerging stays Emerging when age fallback conditions not met (doc<10)
   T3: Emerging stays Emerging when age fallback conditions not met (age<2)
-  T4: Growing -> Mature via volume fallback (doc>=50, age>=7, cycles>=3)
-  T5: Growing stays Growing when volume fallback conditions not met (doc<50)
+  T4: Growing -> Mature via volume fallback (doc>=30, age>=7, cycles>=3)
+  T5: Growing stays Growing when volume fallback conditions not met (doc<30)
   T6: Growing stays Growing when volume fallback conditions not met (age<7)
   T7: Full lifecycle: Emerging -> Growing -> Mature -> Declining -> Dormant
   T8: Fallback blocked by hysteresis (cycles<3)
@@ -104,13 +104,13 @@ result = compute_lifecycle_stage(
 )
 T("T4: volume fallback triggers Mature", result == "Mature", f"got {result}")
 
-S("T5: Growing stays Growing (doc < 50)")
+S("T5: Growing stays Growing (doc < 30)")
 result = compute_lifecycle_stage(
-    current_stage="Growing", document_count=40, velocity_windowed=0.0,
+    current_stage="Growing", document_count=29, velocity_windowed=0.0,
     entropy=0.5, consecutive_declining_cycles=0, days_since_creation=10,
     cycles_in_current_stage=10,
 )
-T("T5: doc=40 not enough for fallback", result == "Growing", f"got {result}")
+T("T5: doc=29 not enough for fallback", result == "Growing", f"got {result}")
 
 S("T6: Growing stays Growing (age < 7)")
 result = compute_lifecycle_stage(

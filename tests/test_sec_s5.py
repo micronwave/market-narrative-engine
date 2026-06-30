@@ -97,8 +97,8 @@ T("root requirements.txt — all packages pinned with ==",
 T("root requirements.txt — scipy pinned",
   any("scipy==" in ln for ln in _req_root))
 
-T("root requirements.txt — websockets pinned",
-  any("websockets==" in ln for ln in _req_root))
+T("root requirements.txt — websockets not duplicated",
+  not any("websockets==" in ln for ln in _req_root))
 
 T("root requirements.txt — yfinance pinned",
   any("yfinance==" in ln for ln in _req_root))
@@ -128,6 +128,9 @@ T("api/requirements.txt — bcrypt pinned",
 T("api/requirements.txt — slowapi pinned",
   any("slowapi==" in ln for ln in _req_api))
 
+T("api/requirements.txt — websockets pinned",
+  any("websockets==" in ln for ln in _req_api))
+
 T("api/requirements.txt — no >= operators remain",
   ">=" not in "\n".join(_pkg_lines(_req_api)))
 
@@ -141,7 +144,7 @@ T("root requirements.txt — no >= operators remain",
 
 S("M3 — DB permissions startup hook")
 
-_main_src = (ROOT / "api" / "main.py").read_text(encoding="utf-8")
+_main_src = (ROOT / "api" / "app_legacy.py").read_text(encoding="utf-8")
 
 T("import stat present in api/main.py",
   "import stat" in _main_src)
@@ -310,8 +313,6 @@ open_since_first = cb_reset._open_since
 T("_open_since is non-zero after opening",
   open_since_first > 0.0)
 
-# Wait a moment, then add more failures — _open_since must NOT change
-time.sleep(0.05)
 for _ in range(5):
     cb_reset.record_failure(source="src-c")
 

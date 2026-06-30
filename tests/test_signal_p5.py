@@ -80,9 +80,14 @@ def T(name: str, condition: bool, details: str = ""):
     print(msg)
 
 
+_tmp_db_paths: list[str] = []
+
+
 def _make_repo() -> SqliteRepository:
-    tmp = tempfile.mktemp(suffix=".db")
-    repo = SqliteRepository(tmp)
+    f = tempfile.NamedTemporaryFile(delete=False, suffix=".db")
+    f.close()
+    _tmp_db_paths.append(f.name)
+    repo = SqliteRepository(f.name)
     repo.migrate()
     return repo
 
@@ -121,7 +126,10 @@ T("SP5-TRAIN-1: 30+ samples -> method=learned with 15 weights",
 
 # SP5-TRAIN-2: cold start degrades to default
 repo = _make_repo()
-model = load_or_train_model(repo, tempfile.mktemp(suffix=".pkl"),
+_f_train2 = tempfile.NamedTemporaryFile(delete=False, suffix=".pkl")
+_f_train2.close()
+_tmp_db_paths.append(_f_train2.name)
+model = load_or_train_model(repo, _f_train2.name,
                             retrain_days=7, min_samples=30)
 T("SP5-TRAIN-2: cold start -> default weights",
   model["method"] == "default",
@@ -200,7 +208,9 @@ T("SP5-SCORE-3: None features -> no crash, in [0, 1]",
 S("Section 4: Model persistence")
 
 # SP5-PERSIST-1: load_or_train_model creates pickle file
-tmp_model_path = tempfile.mktemp(suffix=".pkl")
+_f_persist = tempfile.NamedTemporaryFile(delete=False, suffix=".pkl")
+_f_persist.close()
+tmp_model_path = _f_persist.name
 repo = _make_repo()
 model = load_or_train_model(repo, tmp_model_path, retrain_days=7, min_samples=30)
 T("SP5-PERSIST-1: pickle file created",
@@ -282,7 +292,9 @@ S("Section 8: Pipeline integration")
 # We mock the pipeline environment to test that step 12 can run with the model
 try:
     repo = _make_repo()
-    tmp_model = tempfile.mktemp(suffix=".pkl")
+    _f_int = tempfile.NamedTemporaryFile(delete=False, suffix=".pkl")
+    _f_int.close()
+    tmp_model = _f_int.name
     model = load_or_train_model(repo, tmp_model, retrain_days=7, min_samples=30)
 
     # Insert a test narrative
@@ -350,6 +362,8 @@ print("\n" + "=" * 60)
 passed = sum(1 for _, ok in _results if ok)
 total = len(_results)
 print(f"Phase 5 results: {passed}/{total} passed")
+for _tp in _tmp_db_paths:
+    Path(_tp).unlink(missing_ok=True)
 if passed < total:
     print("FAILED:")
     for name, ok in _results:

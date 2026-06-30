@@ -1,7 +1,7 @@
 """
 C3 API test suite — Narrative Intelligence Platform, Phase C3.
 
-Tests: C3-U1, C3-U3 through C3-U4 (credits/use + SSE stream endpoint).
+Tests: C3-U1 through C3-U4 (credits/use + SSE stream endpoint).
 
 Uses the project's custom S/T runner + FastAPI TestClient (in-process).
 
@@ -83,7 +83,12 @@ def _print_summary() -> None:
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from fastapi.testclient import TestClient  # noqa: E402
-from api.main import app, STUB_AUTH_TOKEN  # noqa: E402
+from api.main import app  # noqa: E402
+from api.app_legacy import (  # noqa: E402
+    STUB_AUTH_TOKEN,
+    _build_narrative_assets_from_repo,
+    calculate_narrative_impact_scores,
+)
 
 client = TestClient(app)
 AUTH_HEADER = {"x-auth-token": STUB_AUTH_TOKEN}
@@ -96,6 +101,20 @@ S("C3-U1: monetization endpoints removed")
 T("POST /api/credits/use returns 404", client.post("/api/credits/use", headers=AUTH_HEADER).status_code == 404)
 T("GET /api/credits returns 404", client.get("/api/credits", headers=AUTH_HEADER).status_code == 404)
 T("GET /api/subscription returns 404", client.get("/api/subscription", headers=AUTH_HEADER).status_code == 404)
+
+# ===========================================================================
+# C3-U2: Retained social/sentiment endpoints are local-safe
+# ===========================================================================
+S("C3-U2: social/sentiment local-safe auth behavior")
+
+resp_market = client.get("/api/sentiment/market")
+T("market sentiment without token → 200", resp_market.status_code == 200, f"got {resp_market.status_code}")
+
+resp_trending = client.get("/api/social/trending")
+T("social trending without token → 200", resp_trending.status_code == 200, f"got {resp_trending.status_code}")
+
+resp_wrong = client.get("/api/sentiment/market", headers={"x-auth-token": "wrong-token"})
+T("bad token on optional auth endpoint → 403", resp_wrong.status_code == 403, f"got {resp_wrong.status_code}")
 
 # ===========================================================================
 # C3-U3: Export endpoint is local-safe
@@ -128,6 +147,33 @@ T("/api/stream is registered", "/api/stream" in _paths,
   f"registered paths: {list(_paths.keys())}")
 T("/api/stream has GET", "get" in _paths.get("/api/stream", {}),
   str(_paths.get("/api/stream", {})))
+
+# ===========================================================================
+# Summary + exit
+# ===========================================================================
+S("C3-U5: impact scoring uses dynamic narrative assets")
+
+_securities = [
+    {
+        "id": "s1",
+        "symbol": "NVDA",
+        "asset_class_id": "ac-001",
+        "price_change_24h": 2.0,
+    }
+]
+_narratives = [
+    {
+        "narrative_id": "nar-live",
+        "entropy": 0.8,
+        "linked_assets": '[{"ticker":"NVDA","similarity_score":0.95}]',
+    }
+]
+_dynamic_assets = _build_narrative_assets_from_repo(_narratives, _securities)
+_scores = calculate_narrative_impact_scores(_securities, _dynamic_assets, _narratives)
+
+T("dynamic narrative assets are created", len(_dynamic_assets) == 1, str(_dynamic_assets))
+T("dynamic mapping preserves narrative id", _dynamic_assets[0]["narrative_id"] == "nar-live", str(_dynamic_assets))
+T("dynamic score for linked security is non-zero", int(_scores.get("s1", 0)) > 0, str(_scores))
 
 # ===========================================================================
 # Summary + exit

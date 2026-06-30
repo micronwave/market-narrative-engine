@@ -50,12 +50,15 @@ def T(name: str, condition: bool, details: str = ""):
 class StubVectorStore:
     delete_calls: list[str] | None = None
     save_calls: int = 0
+    fail_deletes: bool = False
 
     def __post_init__(self):
         if self.delete_calls is None:
             self.delete_calls = []
 
     def delete(self, narrative_id: str) -> None:
+        if self.fail_deletes:
+            raise RuntimeError("simulated vector delete failure")
         self.delete_calls.append(narrative_id)
 
     def save(self) -> None:
@@ -112,9 +115,11 @@ T("T1b: labeling_attempts exists in schema", "labeling_attempts" in columns, f"c
 failed_id = str(uuid.uuid4())
 success_id = str(uuid.uuid4())
 retire_id = str(uuid.uuid4())
+retire_fail_id = str(uuid.uuid4())
 _insert_narrative(repo, narrative_id=failed_id, attempts=0)
 _insert_narrative(repo, narrative_id=success_id, attempts=0)
 _insert_narrative(repo, narrative_id=retire_id, attempts=2)
+_insert_narrative(repo, narrative_id=retire_fail_id, attempts=2)
 
 vector_store = StubVectorStore()
 
@@ -178,6 +183,25 @@ T(
     vector_store.delete_calls == [retire_id]
     and vector_store.save_calls == 0,
     f"delete_calls={vector_store.delete_calls}, save_calls={vector_store.save_calls}",
+)
+
+failing_vector_store = StubVectorStore(fail_deletes=True)
+retire_fail_row = repo.get_narrative(retire_fail_id)
+retired = _handle_failed_labeling_attempt(
+    repo,
+    failing_vector_store,
+    retire_fail_row,
+    needs_label=True,
+    label_persisted=False,
+    now_iso="2026-04-23T01:00:00+00:00",
+)
+retire_fail_after = repo.get_narrative(retire_fail_id)
+T(
+    "T7: failed centroid delete blocks retirement state change",
+    retired is False
+    and retire_fail_after.get("stage") == "Emerging"
+    and int(retire_fail_after.get("labeling_attempts") or 0) == 3,
+    f"row={retire_fail_after}",
 )
 
 try:

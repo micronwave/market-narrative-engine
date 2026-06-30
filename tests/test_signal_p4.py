@@ -37,6 +37,12 @@ from unittest.mock import patch, MagicMock
 _PROJECT_ROOT = str(Path(__file__).parent.parent)
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
+_ADAPTER_PATH = str(Path(__file__).parent.parent / "api" / "adapters")
+if _ADAPTER_PATH not in sys.path:
+    sys.path.insert(0, _ADAPTER_PATH)
+_SERVICE_PATH = str(Path(__file__).parent.parent / "api" / "services")
+if _SERVICE_PATH not in sys.path:
+    sys.path.insert(0, _SERVICE_PATH)
 
 from catalyst_service import (
     get_fomc_dates,
@@ -67,11 +73,25 @@ def T(name: str, condition: bool, details: str = ""):
     print(msg)
 
 
+_tmp_db_paths: list[str] = []
+
+
 def _make_repo() -> SqliteRepository:
-    tmp = tempfile.mktemp(suffix=".db")
-    repo = SqliteRepository(tmp)
+    f = tempfile.NamedTemporaryFile(delete=False, suffix=".db")
+    f.close()
+    _tmp_db_paths.append(f.name)
+    repo = SqliteRepository(f.name)
     repo.migrate()
     return repo
+
+
+class _FakeRequestsResponse:
+    def __init__(self, status_code: int, payload: dict):
+        self.status_code = status_code
+        self._payload = payload
+
+    def json(self):
+        return self._payload
 
 
 # ---------------------------------------------------------------------------
@@ -244,12 +264,79 @@ except Exception as exc:
 T("SP4-INT-1: Step 19.1 completes without error", step_ok)
 
 # ---------------------------------------------------------------------------
+# Section 8: Adapter parser/error realism (no network)
+# ---------------------------------------------------------------------------
+S("Section 8: Adapter parser and error realism")
+
+from twelve_data_adapter import TwelveDataAdapter  # noqa: E402
+from coingecko_adapter import CoinGeckoAdapter  # noqa: E402
+
+td = TwelveDataAdapter(api_key="demo-key")
+with patch.object(td, "_wait_for_rate_limit", return_value=True), \
+     patch("twelve_data_adapter.requests.get", return_value=_FakeRequestsResponse(200, {
+         "symbol": "AAPL",
+         "datetime": "2026-04-01 15:30:00",
+         "open": "100.0",
+         "high": "101.5",
+         "low": "99.8",
+         "close": "100.7",
+         "volume": "123456",
+     })):
+    td_quote = td.fetch_quote("AAPL", instrument_type="equity")
+T("SP4-ADP-1: TwelveData parses realistic quote payload",
+  td_quote is not None and td_quote.source == "twelve_data" and td_quote.price == 100.7,
+  f"quote={td_quote}")
+
+with patch.object(td, "_wait_for_rate_limit", return_value=True), \
+     patch("twelve_data_adapter.requests.get", return_value=_FakeRequestsResponse(200, {"code": 400, "message": "bad symbol"})):
+    td_error = td.fetch_quote("BAD", instrument_type="equity")
+T("SP4-ADP-2: TwelveData returns None for provider error payload", td_error is None, f"got={td_error!r}")
+
+with patch.object(td, "_wait_for_rate_limit", return_value=True), \
+     patch("twelve_data_adapter.requests.get", return_value=_FakeRequestsResponse(200, {"symbol": "AAPL", "close": None})):
+    td_partial = td.fetch_quote("AAPL", instrument_type="equity")
+T("SP4-ADP-3: TwelveData returns None for partial payload without close", td_partial is None, f"got={td_partial!r}")
+
+with patch.object(td, "_wait_for_rate_limit", return_value=True), \
+     patch("twelve_data_adapter.requests.get", return_value=_FakeRequestsResponse(200, {"symbol": "AAPL", "datetime": "bad-ts", "close": "100.0"})):
+    td_bad_ts = td.fetch_quote("AAPL", instrument_type="equity")
+T("SP4-ADP-4: TwelveData tolerates malformed datetime and still returns quote",
+  td_bad_ts is not None and td_bad_ts.price == 100.0,
+  f"quote={td_bad_ts}")
+
+cg = CoinGeckoAdapter(api_key="demo-key")
+with patch.object(cg, "_wait_for_rate_limit", return_value=True), \
+     patch("coingecko_adapter.requests.get", return_value=_FakeRequestsResponse(200, {"bitcoin": {"usd": 64000.5, "usd_24h_vol": 999999.0}})):
+    cg_quote = cg.fetch_quote("BINANCE:BTCUSDT", instrument_type="crypto")
+T("SP4-ADP-5: CoinGecko parses realistic payload with symbol normalization",
+  cg_quote is not None and cg_quote.source == "coingecko" and cg_quote.price == 64000.5,
+  f"quote={cg_quote}")
+
+with patch.object(cg, "_wait_for_rate_limit", return_value=True), \
+     patch("coingecko_adapter.requests.get", return_value=_FakeRequestsResponse(200, {})):
+    cg_missing = cg.fetch_quote("BTC", instrument_type="crypto")
+T("SP4-ADP-6: CoinGecko returns None on empty provider payload", cg_missing is None, f"got={cg_missing!r}")
+
+with patch.object(cg, "_wait_for_rate_limit", return_value=True), \
+     patch("coingecko_adapter.requests.get", return_value=_FakeRequestsResponse(200, {"bitcoin": {"usd_24h_vol": 12.0}})):
+    cg_partial = cg.fetch_quote("BTC", instrument_type="crypto")
+T("SP4-ADP-7: CoinGecko returns None for partial payload without usd", cg_partial is None, f"got={cg_partial!r}")
+
+with patch("coingecko_adapter.requests.get") as cg_get_mock:
+    cg_unknown = cg.fetch_quote("UNKNOWNCOIN", instrument_type="crypto")
+T("SP4-ADP-8: CoinGecko skips unsupported symbol without HTTP call",
+  cg_unknown is None and not cg_get_mock.called,
+  f"got={cg_unknown!r}, called={cg_get_mock.called}")
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 print("\n" + "=" * 60)
 passed = sum(1 for _, ok in _results if ok)
 total = len(_results)
 print(f"Phase 4 results: {passed}/{total} passed")
+for _tp in _tmp_db_paths:
+    Path(_tp).unlink(missing_ok=True)
 if passed < total:
     print("FAILED:")
     for name, ok in _results:

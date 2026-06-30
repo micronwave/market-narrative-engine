@@ -15,8 +15,9 @@ On all-pass, appends a line to frontend_build_log.
 
 import logging
 import sys
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 logging.basicConfig(
     level=logging.WARNING,
@@ -245,6 +246,60 @@ if real_id:
         headers={"x-auth-token": "bad-token"},
     )
     T("export with bad token returns 403", resp_bad.status_code == 403, f"got {resp_bad.status_code}")
+
+# ===========================================================================
+# C2-U6: Mutation escalation can bypass Sonnet gate 1
+# ===========================================================================
+S("C2-U6: mutation escalation bypasses Sonnet gate 1")
+
+from llm_client import LlmClient  # noqa: E402
+
+_mock_repo = MagicMock()
+_mock_repo.get_narrative.return_value = {
+    "narrative_id": "n-mutation-bypass",
+    "ns_score": 0.2,  # below default threshold; gate 1 should fail unless bypassed
+    "created_at": (datetime.now(timezone.utc) - timedelta(days=10)).isoformat(),
+}
+_mock_repo.get_sonnet_calls_last_24h.return_value = []
+_mock_repo.get_sonnet_daily_spend.return_value = {"total_tokens_used": 0}
+
+_mock_settings = MagicMock()
+_mock_settings.CONFIDENCE_ESCALATION_THRESHOLD = 0.6
+_mock_settings.SONNET_DAILY_TOKEN_BUDGET = 200000
+_mock_settings.SONNET_MAX_TOKENS = 2048
+_mock_settings.SONNET_MODEL = "claude-sonnet-4-6"
+
+_mock_client = MagicMock()
+_sonnet_resp = MagicMock()
+_sonnet_resp.content = [MagicMock(text="Mutation analysis generated")]
+_sonnet_resp.usage = MagicMock(input_tokens=100, output_tokens=60)
+_mock_client.messages.create.return_value = _sonnet_resp
+
+_llm = LlmClient.__new__(LlmClient)
+_llm._settings = _mock_settings
+_llm._repository = _mock_repo
+_llm._client = _mock_client
+
+with patch("signals.get_narrative_age_days", return_value=10):
+    _no_bypass_result = _llm.call_sonnet("n-mutation-bypass", "Analyze this narrative")
+    _bypass_result = _llm.call_sonnet(
+        "n-mutation-bypass",
+        "Analyze this narrative",
+        skip_ns_gate=True,
+    )
+
+T("without bypass, low ns_score returns None", _no_bypass_result is None)
+T(
+    "with bypass, mutation analysis is returned",
+    _bypass_result == "Mutation analysis generated",
+    f"got {_bypass_result!r}",
+)
+
+_logged_calls = [_args[0] for _args, _kwargs in _mock_repo.log_llm_call.call_args_list]
+T(
+    "bypass decision logged to llm audit trail",
+    any(_record.get("task_type") == "mutation_gate_1_bypass" for _record in _logged_calls),
+)
 
 # ===========================================================================
 # Summary + frontend_build_log

@@ -118,7 +118,7 @@ T("ENVIRONMENT defaults to 'development'",
 # --- M1: Module-level _ENVIRONMENT variable ---
 S("M1: api/main.py — _ENVIRONMENT variable")
 
-import api.main as main_mod
+import api.app_legacy as main_mod
 
 T("_ENVIRONMENT variable exists",
   hasattr(main_mod, "_ENVIRONMENT"),

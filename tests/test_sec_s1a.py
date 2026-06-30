@@ -83,8 +83,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from concurrent.futures import ThreadPoolExecutor  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
-from api.main import (  # noqa: E402
-    app,
+from api.main import app  # noqa: E402
+from api.app_legacy import (  # noqa: E402
     limiter,
     _BG_EXECUTOR,
     _REQUEST_EXECUTOR,
@@ -100,20 +100,20 @@ S("C2: Rate limiter configuration")
 T("slowapi importable", True, "import succeeded at module level")
 
 T(
-    "app.state.limiter exists",
-    hasattr(app.state, "limiter"),
-    f"app.state keys: {list(vars(app.state).keys()) if hasattr(app, 'state') else 'no state'}",
+    "limiter singleton exists",
+    limiter is not None,
+    "limiter import returned None",
 )
 
 T(
     "limiter is a Limiter instance",
-    type(app.state.limiter).__name__ == "Limiter",
-    f"type: {type(app.state.limiter).__name__}",
+    type(limiter).__name__ == "Limiter",
+    f"type: {type(limiter).__name__}",
 )
 
 # Check that rate-limited endpoints have the limiter decorators
 # We verify by reading the source and checking for @limiter.limit patterns
-main_py = Path(__file__).parent.parent / "api" / "main.py"
+main_py = Path(__file__).parent.parent / "api" / "app_legacy.py"
 source = main_py.read_text(encoding="utf-8")
 
 limit_count = len(re.findall(r"@limiter\.limit\(", source))

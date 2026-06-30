@@ -14,6 +14,9 @@ Exit code 0 if all tests pass, 1 if any fail.
 
 import logging
 import sys
+import tempfile
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 logging.basicConfig(
@@ -84,6 +87,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from fastapi.testclient import TestClient  # noqa: E402
 from api.main import app  # noqa: E402
+from repository import SqliteRepository  # noqa: E402
 
 VALID_SLOPE_DIRECTIONS = {"accelerating", "decelerating", "steady"}
 
@@ -276,6 +280,175 @@ with TestClient(app) as client:
           f"pressures: {pressures[:5]}")
     else:
         T("empty sectors is valid", True, "no narratives with linked_assets — shape OK")
+
+    # ===========================================================================
+    # D5-U5: atomically_persist_cluster rolls back when a step fails
+    # ===========================================================================
+    S("D5-U5: atomically_persist_cluster rollback on failure")
+
+    tmp_db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    tmp_db.close()
+    try:
+        repo = SqliteRepository(tmp_db.name)
+        repo.migrate()
+
+        nid = str(uuid.uuid4())
+        doc_id = str(uuid.uuid4())
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        repo.insert_candidate(
+            {
+                "doc_id": doc_id,
+                "narrative_id_assigned": None,
+                "embedding_blob": b"",
+                "raw_text_hash": "h",
+                "source_url": "https://example.com/a",
+                "source_domain": "example.com",
+                "published_at": now_iso,
+                "ingested_at": now_iso,
+                "status": "pending",
+                "raw_text": "example",
+                "author": None,
+            }
+        )
+
+        narrative = {
+            "narrative_id": nid,
+            "name": "Cluster TX rollback",
+            "description": "",
+            "stage": "Emerging",
+            "created_at": now_iso,
+            "last_updated_at": now_iso,
+            "is_coordinated": 0,
+            "coordination_flag_count": 0,
+            "suppressed": 0,
+            "linked_assets": None,
+            "disclaimer": None,
+            "human_review_required": 0,
+            "is_catalyst": 0,
+            "document_count": 1,
+            "velocity": 0.0,
+            "velocity_windowed": 0.0,
+            "centrality": 0.0,
+            "entropy": None,
+            "intent_weight": 0.0,
+            "ns_score": 0.0,
+            "cohesion": 0.0,
+            "polarization": 0.0,
+            "cross_source_score": 0.0,
+            "last_assignment_date": now_iso[:10],
+            "consecutive_declining_cycles": 0,
+        }
+        member_docs = [
+            {
+                "doc_id": doc_id,
+                "source_url": "https://example.com/a",
+                "source_domain": "example.com",
+                "published_at": now_iso,
+                "author": "",
+                "raw_text": "cluster text",
+            }
+        ]
+
+        raised = False
+        try:
+            repo.atomically_persist_cluster(
+                narrative=narrative,
+                cycle_slot=now_iso,
+                centroid_blob=b"abc",
+                member_docs=member_docs,
+                today=now_iso[:10],
+                post_write_hook=lambda: (_ for _ in ()).throw(RuntimeError("forced failure")),
+            )
+        except RuntimeError:
+            raised = True
+        T("forced failure raises", raised)
+        T("narrative insert rolled back", repo.get_narrative(nid) is None)
+        pending_docs = repo.get_candidate_buffer(status="pending")
+        T("candidate status rolled back to pending", any(d.get("doc_id") == doc_id for d in pending_docs))
+    finally:
+        Path(tmp_db.name).unlink(missing_ok=True)
+
+    # ===========================================================================
+    # D5-U6: consistency check flags missing vectors
+    # ===========================================================================
+    S("D5-U6: cluster consistency check")
+
+    tmp_db2 = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    tmp_db2.close()
+    try:
+        repo2 = SqliteRepository(tmp_db2.name)
+        repo2.migrate()
+
+        nid2 = str(uuid.uuid4())
+        doc_id2 = str(uuid.uuid4())
+        now_iso2 = datetime.now(timezone.utc).isoformat()
+
+        repo2.insert_candidate(
+            {
+                "doc_id": doc_id2,
+                "narrative_id_assigned": None,
+                "embedding_blob": b"",
+                "raw_text_hash": "h2",
+                "source_url": "https://example.com/b",
+                "source_domain": "example.com",
+                "published_at": now_iso2,
+                "ingested_at": now_iso2,
+                "status": "pending",
+                "raw_text": "example",
+                "author": None,
+            }
+        )
+
+        narrative2 = {
+            "narrative_id": nid2,
+            "name": "Cluster TX consistency",
+            "description": "",
+            "stage": "Emerging",
+            "created_at": now_iso2,
+            "last_updated_at": now_iso2,
+            "is_coordinated": 0,
+            "coordination_flag_count": 0,
+            "suppressed": 0,
+            "linked_assets": None,
+            "disclaimer": None,
+            "human_review_required": 0,
+            "is_catalyst": 0,
+            "document_count": 1,
+            "velocity": 0.0,
+            "velocity_windowed": 0.0,
+            "centrality": 0.0,
+            "entropy": None,
+            "intent_weight": 0.0,
+            "ns_score": 0.0,
+            "cohesion": 0.0,
+            "polarization": 0.0,
+            "cross_source_score": 0.0,
+            "last_assignment_date": now_iso2[:10],
+            "consecutive_declining_cycles": 0,
+        }
+        repo2.atomically_persist_cluster(
+            narrative=narrative2,
+            cycle_slot=now_iso2,
+            centroid_blob=b"def",
+            member_docs=[
+                {
+                    "doc_id": doc_id2,
+                    "source_url": "https://example.com/b",
+                    "source_domain": "example.com",
+                    "published_at": now_iso2,
+                    "author": "",
+                    "raw_text": "cluster text",
+                }
+            ],
+            today=now_iso2[:10],
+        )
+        mismatch = repo2.verify_cluster_consistency(set())
+        T("consistency check detects missing vector id", mismatch.get("missing_count", 0) >= 1)
+        ok = repo2.verify_cluster_consistency({nid2})
+        T("consistency check passes when vector exists", ok.get("missing_count", 0) == 0)
+    finally:
+        Path(tmp_db2.name).unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------

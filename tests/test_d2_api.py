@@ -175,7 +175,7 @@ with TestClient(app) as client:
     with mock.patch.object(app.state if hasattr(app, "state") else object(), "__init__", create=True):
         pass
     # Directly test with a fresh service instance that has no key
-    import api.main as main_module
+    import api.app_legacy as main_module
     original_finnhub = main_module.finnhub
     main_module.finnhub = FinnhubService(api_key="", cache_ttl=60)
     try:
